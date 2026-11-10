@@ -224,8 +224,9 @@ reconstructed Oracle advice; old or
 corrupt checkpoints rebuild from the authoritative JSONL ledger. Full history
 is loaded for explicit history/diagnostic requests. Saved goal/session formats
 remain compatible. Task presentation caches use content snapshots; usage changes
-do not rebuild task trees. Stable prompt rules precede changing goal data and
-usage counters, with retrieval instructions beside bounded excerpts.
+do not rebuild task trees. Stable prompt rules precede changing goal data, and
+the next-step pointer that follows them is replaced at the tail instead of being
+accumulated, with retrieval instructions beside bounded excerpts.
 
 Warm settings resolution is cached by layer identity and applicable environment
 values; public resolved values remain independently editable. Task and prompt

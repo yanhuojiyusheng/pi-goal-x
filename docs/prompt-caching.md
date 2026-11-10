@@ -6,7 +6,7 @@ The request layout is:
 
 1. Host system prompt and tool schemas.
 2. Conversation history, with each goal checkpoint normalized to a tiny, stable trigger in its original position.
-3. Request-only goal policy plus compact counter/context snapshots, replayed at verified history anchors when safe. Current policy includes the objective, tasks, lifecycle rules, limits, scheduling state and applicable recovery/auditor reminders.
+3. Request-only goal policy plus the next-step pointer that carries the current task, its completion contract, the next task and the usage header. The policy block is replayed at a verified history anchor; the pointer is replaced at the tail on every request.
 
 Changing goal state never rewrites the system prompt or historical messages. The full goal-state message is not persisted into the session. Old checkpoints remain until Pi compacts history; retaining small markers avoids shifting the prefix on every continuation. Display-only auditor messages are consistently excluded, and tool calls stay adjacent to their results.
 
@@ -24,8 +24,10 @@ Validation includes consecutive request-prefix regressions; actual Anthropic, An
 
 Provider references: [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) describes exact-prefix matching and explicit breakpoints; [DeepSeek context caching](https://api-docs.deepseek.com/guides/kv_cache/) describes its automatic prefix cache and usage counters.
 
-Active requests split policy from compact counter/context snapshots. Already-sent tails are replayed at verified history anchors so implicit-cache requests extend their previous prefix. Policy changes (including budget/run-limit removal), rewritten history and unsafe tool-result boundaries reset retention. At most 32 tails and 4 KiB of counter text are retained per session, across at most 16 session/model identities; no full-state tails are persisted. Unchanged requests add no tail. Older snapshots are historical, and current policy takes precedence over cache reuse.
+Active requests split two request-only blocks with opposite needs. The policy block (objective, tasks, lifecycle rules, limits, scheduling state and applicable recovery/auditor reminders) is large and stable, so it is retained verbatim at a verified history anchor and re-anchored once per 24 requests that carry fresh content. The pointer block (current task, its contract, the next task, progress, and the usage header) must be read last, so it is replaced rather than accumulated: each request drops the previous copy and appends the current one at the tail. An identical request adds nothing and stays byte-identical, which keeps retries warm.
+
+Replacing the pointer is the one deliberate cache break: the shared prefix ends at the policy block and the cost is the pointer itself, which would have been new content either way. The window reset is the expensive one, because everything between the old anchor and the tail loses its cache. Policy changes (including budget/run-limit removal), rewritten history, unsafe tool-result boundaries and an exhausted window reset retention; at most 16 session/model identities are tracked and no full-state tails are persisted. Older copies are historical, and the current policy takes precedence over cache reuse.
 
 Explicit-marker relocation skips all retained live text and tolerates Pi's trailing effort-only messages. Another extension's content-bearing suffix is left alone. Changing models/providers starts a separate retention identity. Unknown session identities do not retain history between requests.
 
-Validation now includes advancing SDK request chains, combined effort-marker/retention regressions, 1,000-turn growth bounds and a 64 KiB–4 MiB history-cost gate. These are request-construction and CPU measurements, not live provider hit-rate claims.
+Validation now includes advancing SDK request chains, combined effort-marker/retention regressions, a 1,000-transition corpus that asserts bounded retained blocks while history grows, and a 64 KiB–4 MiB history-cost gate. These are request-construction and CPU measurements, not live provider hit-rate claims.
