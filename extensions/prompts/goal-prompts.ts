@@ -243,24 +243,6 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, conte
 	return { state, pointer: nextStepBlock(goal, settings, contextUsage) };
 }
 
-/**
- * The second injected block: what to do NOW, what "done" means for it, and the
- * step after it. It replaced the usage snapshot, which sat at the end of the
- * request — the position the model reads last — and carried only token counts.
- *
- * "Now" is the deepest open step, not the task the focus names: a phased plan
- * marks the phase current, and the unit the model can actually work on is that
- * phase's first open child. Lightweight children are notes on their parent, so
- * they never become the unit themselves.
- *
- * The header carries the goal's cumulative usage. That looks like decoration and
- * is not: spending moves it, which makes the block differ on nearly every
- * request, so retention drops the previous copy and appends a fresh one at the
- * tail. The pointer therefore never drifts behind the newest turn. The policy
- * block is what needs a window, and retention re-anchors that one on its own
- * request counter (`MAX_STATE_REANCHOR_REQUESTS`); this block is replaced every
- * request, so it needs no window of its own.
- */
 /** The open step a focused task stands for: its first open child, recursively. */
 function actionableTask(task: GoalTask): GoalTask {
 	if (task.lightweightSubtasks) return task;
@@ -281,10 +263,24 @@ function taskPath(tasks: readonly GoalTask[], id: string): GoalTask[] | undefine
 	return undefined;
 }
 
-function childProgress(parent: GoalTask): string {
-	const children = parent.subtasks ?? [];
-	return `${children.filter(child => child.status === "complete").length}/${children.length}`;
-}
+/**
+ * The second injected block: what to do NOW, what "done" means for it, and the
+ * step after it. It replaced the usage snapshot, which sat at the end of the
+ * request — the position the model reads last — and carried only token counts.
+ *
+ * "Now" is the deepest open step, named by id and title so a phased plan reads
+ * as `p1.1.1 · Redis adapter`, not as its phase: a plan marks the phase current,
+ * and the unit the model can actually work on is that phase's first open child.
+ * Lightweight children are notes on their parent, so they never become the unit.
+ *
+ * The header carries the goal's cumulative usage. That looks like decoration and
+ * is not: spending moves it, which makes the block differ on nearly every
+ * request, so retention drops the previous copy and appends a fresh one at the
+ * tail. The pointer therefore never drifts behind the newest turn. The policy
+ * block is what needs a window, and retention re-anchors that one on its own
+ * request counter (`MAX_STATE_REANCHOR_REQUESTS`); this block is replaced every
+ * request, so it needs no window of its own.
+ */
 
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
 	const usage = formatUsage(goal);
@@ -298,10 +294,8 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 	if (index && current) {
 		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
 		const next = after.find(row => row.task.status === "pending")?.task;
-		lines.push(`Now: ${excerpt(current.title, 180, "tasks")}`);
+		lines.push(`Now: ${excerpt(current.id, 80, "tasks")} · ${excerpt(current.title, 180, "tasks")}`);
 		const path = taskPath(goal.taskList!.tasks, current.id) ?? [current];
-		const parent = path[path.length - 2];
-		if (parent) lines.push(`Phase: ${excerpt(parent.title, 120, "tasks")} · ${childProgress(parent)}`);
 		const contract = ([...path].reverse().find(task => task.verificationContract?.trim())?.verificationContract ?? goal.verificationContract)?.trim();
 		if (contract && !settings?.disableContracts) lines.push(`Done when: ${excerpt(contract, 600, "tasks")}`);
 		lines.push(next ? `Then: ${excerpt(next.id, 80, "tasks")} · ${excerpt(next.title, 180, "tasks")}` : "Then: none — this is the last pending task");

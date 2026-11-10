@@ -6,7 +6,7 @@ The request layout is:
 
 1. Host system prompt and tool schemas.
 2. Conversation history, with each goal checkpoint normalized to a tiny, stable trigger in its original position.
-3. Request-only goal policy plus the next-step pointer that carries the open step (the deepest pending task and, when it is nested, the phase it sits in), that step's completion contract, the next task and the usage header. The policy block is replayed at a verified history anchor; the pointer is replaced at the tail on every request.
+3. Request-only goal policy plus the next-step pointer that carries the open step (the deepest pending task, named by id and title so a nested plan needs no phase line), that step's completion contract, the next task and the usage header. The policy block is replayed at a verified history anchor; the pointer is replaced at the tail on every request.
 
 Changing goal state never rewrites the system prompt or historical messages. The full goal-state message is not persisted into the session. Old checkpoints remain until Pi compacts history; retaining small markers avoids shifting the prefix on every continuation. Display-only auditor messages are consistently excluded, and tool calls stay adjacent to their results.
 

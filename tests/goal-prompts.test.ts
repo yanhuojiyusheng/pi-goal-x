@@ -467,7 +467,7 @@ test("the closing block points at the current task, with usage as its clock", ()
 	goal.currentTaskId = "task-2";
 	const prompt = goalPrompt(goal);
 	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2 .*\]/);
-	assert.match(prompt, /Now: Write the exporter/);
+	assert.match(prompt, /Now: task-2 · Write the exporter/);
 	assert.match(prompt, /Done when: Only filtered rows are exported/);
 	assert.match(prompt, /Then: task-3 · Document it/, "the pointer names the next task, not an earlier one");
 	assert.match(prompt, /\[PI GOAL NOW goalId=\S+ taskId=task-2 10m0s · 987654 tokens\]/, "the header carries usage; that is what re-anchors the pointer every request");
@@ -505,8 +505,8 @@ test("the closing block points at the open step inside a phased task, not at the
 	goal.currentTaskId = "p1";
 	const phaseFocused = goalPromptParts(goal).pointer;
 	assert.match(phaseFocused, /\[PI GOAL NOW goalId=\S+ taskId=p1\.1\]/);
-	assert.match(phaseFocused, /Now: Create the directories/);
-	assert.match(phaseFocused, /Phase: Stage one · 0\/2/);
+	assert.match(phaseFocused, /Now: p1\.1 · Create the directories/, "the step carries its id, so a nested plan needs no Phase line");
+	assert.doesNotMatch(phaseFocused, /Phase:/);
 	assert.match(phaseFocused, /Done when: Only src\/ is created/, "the innermost contract wins over the phase's");
 	assert.match(phaseFocused, /Then: p1\.2 · Write the CLI entry/, "the next step is the sibling, not the phase's own child again");
 	// Focusing the child directly reads the same, so inheritance and focus agree.
@@ -517,8 +517,7 @@ test("the closing block points at the open step inside a phased task, not at the
 	goal.taskList = phased({ p11: "complete", p12: "complete" });
 	const phaseDone = goalPromptParts(goal).pointer;
 	assert.match(phaseDone, /taskId=p1\]/);
-	assert.match(phaseDone, /Now: Stage one/);
-	assert.doesNotMatch(phaseDone, /Phase:/);
+	assert.match(phaseDone, /Now: p1 · Stage one/);
 	assert.match(phaseDone, /Then: p2 · Stage two/);
 
 	// Without a focused task the suggestion descends too.
@@ -533,5 +532,5 @@ test("the closing block points at the open step inside a phased task, not at the
 	}] } as GoalTaskList;
 	lightweight.currentTaskId = "docs";
 	assert.match(goalPromptParts(lightweight).pointer, /taskId=docs\]/);
-	assert.match(goalPromptParts(lightweight).pointer, /Now: Write the docs/);
+	assert.match(goalPromptParts(lightweight).pointer, /Now: docs · Write the docs/);
 });
