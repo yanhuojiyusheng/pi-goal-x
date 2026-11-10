@@ -24,7 +24,10 @@ try {
   tarball=path.resolve(tarball);
   integrity=`sha512-${createHash('sha512').update(readFileSync(tarball)).digest('base64')}`;
  } else {
-  const [packed]=JSON.parse(run('npm',['pack','--json','--pack-destination',evidence],root));
+  // npm 12 returns an object keyed by package name; older npm returns an array.
+  const packedOutput=JSON.parse(run('npm',['pack','--json','--pack-destination',evidence],root));
+  const packed=Array.isArray(packedOutput)?packedOutput[0]:Object.values(packedOutput)[0];
+  assert.ok(packed?.filename,'npm pack reported no tarball');
   tarball=path.join(evidence,packed.filename);
   integrity=packed.integrity;
  }

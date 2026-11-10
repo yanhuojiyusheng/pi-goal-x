@@ -151,9 +151,15 @@ resolve_run_dir() {
 }
 
 # Load the supported case-id allowlist from SUPPORTED_CASES.json.
+# jq is optional: node is always present here, and a missing jq must not silently
+# empty the allowlist and reject every supported case.
 supported_case_ids() {
   local file="${EXPERIMENTS_DIR}/SUPPORTED_CASES.json"
-  jq -r '.supported[]' "${file}" 2>/dev/null || true
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.supported[]' "${file}" 2>/dev/null || true
+    return
+  fi
+  node -e 'const ids=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).supported??[];for(const id of ids)console.log(id)' "${file}" 2>/dev/null || true
 }
 
 is_supported_case() {
