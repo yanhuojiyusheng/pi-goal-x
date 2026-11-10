@@ -795,10 +795,10 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  const preflight = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
  assert.equal(preflight, undefined, "goal state never rewrites the system prefix");
  const first = await request();
- assert.deepEqual(first.slice(0, -2), original, "stable policy and volatile counters ride as two request-only tails");
+ assert.deepEqual(first.slice(0, -2), original, "stable policy and the next-step pointer ride as two request-only tails");
  assert.equal(first.filter((m: any) => m.customType === "pi-goal-live-context").length, 2);
  assert.match(first.at(-2).content, /PI GOAL ACTIVE/);
- assert.match(first.at(-1).content, /Goal snapshot:/);
+ assert.match(first.at(-1).content, /PI GOAL NOW/);
  const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-2).content}]}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
  await h.handlers.before_provider_request!({payload: wire}, h.ctx);
  assert.equal(wire.messages[0].content[0].cache_control.type, "ephemeral", "registered provider hook places the breakpoint on history");
@@ -813,9 +813,9 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  assert.deepEqual(second.slice(0, first.length), first, "the advanced request literally extends the previous one");
  assert.deepEqual(second.slice(3, 5), [toolCall, toolResult], "tool call and result stay adjacent");
  assert.match(second[1].content, /PI GOAL ACTIVE/);
- assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 3, "changed counters append one small tail; the policy block is retained, not resent");
- assert.match(second.at(-1).content, /12345 tokens/);
- assert.doesNotMatch(second.at(-1).content, /Autonomous runs/, "an unlimited allowance reports no runs line");
+ assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 2, "usage and run counters stay out of the prompt, so nothing is appended");
+ assert.ok(!JSON.stringify(second).includes("12345"), "cumulative token usage never enters the model context");
+ assert.ok(!JSON.stringify(second).includes("Autonomous runs"), "an unlimited allowance reports no runs line");
  // An objective edit changes the stable policy block: retention resets once so no
  // stale objective lingers mid-history, and the fresh pair anchors the new prefix.
  h.core.state.goal!.objective = "Changed objective";
@@ -823,7 +823,7 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  assert.equal(third.filter((m: any) => m.customType === "pi-goal-live-context").length, 2);
  assert.deepEqual(third.slice(0, 3), history);
  assert.match(third.at(-2).content, /Changed objective/);
- assert.match(third.at(-1).content, /Goal snapshot:/);
+ assert.match(third.at(-1).content, /PI GOAL NOW/);
  h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
  for (let i = 0; i < 4; i++) {
   history.push({role: "custom", customType: "pi-goal-event", content: "legacy full prompt", details: {goalId: h.core.state.goal!.id, kind: "checkpoint"}, timestamp: i + 4});
@@ -885,7 +885,7 @@ test("prompt cache: model changes and missing identities cannot replay another r
  for (const model of [{provider: "provider-a", id: "model-b"}, {provider: "provider-b", id: "model-b"}]) {
   const out = await request({...h.ctx, model} as ExtensionContext);
   assert.equal(out.filter(m => m.customType === "pi-goal-live-context").length, 2);
-  assert.match(out.at(-1).content, /123456 tokens/);
+  assert.ok(!JSON.stringify(out).includes("123456"), "another session's request never replays this goal's usage");
  }
  const unknown = {...h.ctx, sessionManager: {...h.ctx.sessionManager, getSessionId: () => undefined}} as unknown as ExtensionContext;
  await h.handlers.session_start!({}, unknown);
@@ -898,7 +898,7 @@ test("prompt cache: model changes and missing identities cannot replay another r
  await h.handlers.session_start!({}, initial);
  const restarted = await request(initial);
  assert.equal(restarted.filter(m => m.customType === "pi-goal-live-context").length, 2);
- assert.match(restarted.at(-1).content, /234567 tokens/);
+ assert.ok(!JSON.stringify(restarted).includes("234567"));
 });
 
 for (const order of ['prepare-first', 'agent-first']) test(`rejected checkpoints preserve a replacement goal through ${order} startup and cancellation`, async t => {

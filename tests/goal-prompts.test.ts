@@ -451,3 +451,33 @@ test("allowance configuration refreshes cached guidance without bloating disable
 	assert.doesNotMatch(zero, /Saved decisions terminate/);
 	assert.match(zero, /0\/0 \(automatic continuation disabled\)/);
 });
+
+test("the closing block points at the current task instead of usage counters", () => {
+	const goal = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
+	goal.usage = { tokensUsed: 987654, activeSeconds: 600 };
+	goal.taskList = {
+		tasks: [
+			{ id: "task-1", title: "Done task", status: "complete" },
+			{ id: "task-2", title: "Write the exporter", status: "pending", verificationContract: "Only filtered rows are exported" },
+			{ id: "task-3", title: "Document it", status: "pending" },
+		],
+		blockCompletion: false,
+	} as GoalTaskList;
+	goal.currentTaskId = "task-2";
+	const prompt = goalPrompt(goal);
+	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2\]/);
+	assert.match(prompt, /现在做：task-2 · Write the exporter/);
+	assert.match(prompt, /验收：Only filtered rows are exported/);
+	assert.match(prompt, /之后：task-3 · Document it/, "the pointer names the next task, not an earlier one");
+	assert.doesNotMatch(prompt, /987654|10m0s/, "cumulative usage never enters the model context");
+
+	goal.currentTaskId = "task-3";
+	assert.match(goalPrompt(goal), /之后：无（这是最后一个待办）/);
+
+	goal.currentTaskId = undefined;
+	assert.match(goalPrompt(goal), /从第一个待办开始：task-2/);
+
+	const noTasks = { ...goal, taskList: undefined, currentTaskId: undefined };
+	assert.match(goalPrompt(noTasks), /按上方目标继续推进/);
+	assert.match(goalPrompt(goal, { disableTasks: true }), /按上方目标继续推进/);
+});

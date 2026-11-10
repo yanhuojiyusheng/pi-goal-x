@@ -230,18 +230,57 @@ function retainedTaskChars(task: GoalTask): number {
 }
 
 export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; counters: string } {
-	// The policy block changes only when the goal itself changes; the counters
-	// change nearly every turn. Splitting them lets request-only injection retain
-	// each at its own rate so consecutive provider requests stay prefix-stable.
+	// The policy block changes only when the goal itself changes; the second
+	// block changes when the current task changes. Splitting them lets
+	// request-only injection retain each at its own rate so consecutive provider
+	// requests stay prefix-stable.
 	// Scheduling instructions ride with the policy block: they are cleared by
 	// omission, so a retained copy would keep issuing a cancelled order.
 	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
-	const { runs, instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
+	const { instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
 	const limits = `Limits: lifetime tokens=${goal.tokenBudget ?? "none"}; runs=${settings?.maxAutonomousRuns ?? "unlimited"}.`;
 	const state = [fixed, instructions, limits, "Usage spans goal turns, not context. Latest snapshot supersedes earlier snapshots."].filter(Boolean).join("\n");
-	const context = settings?.showContextUsage === true ? `\n${contextUsageLine(contextUsage)}` : "";
-	const counters = `Goal snapshot: ${formatUsage(goal)}${context}\n${runs}`;
-	return { state, counters };
+	return { state, counters: nextStepBlock(goal, settings, contextUsage) };
+}
+
+/**
+ * The second injected block: what to do NOW, what "done" means for it, and the
+ * step after it. It replaced the usage snapshot, which sat at the end of the
+ * request — the position the model reads last — and carried only token counts.
+ * Its text depends solely on the current task and its neighbours, so it stays
+ * byte-identical between task transitions and is retained verbatim.
+ */
+function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
+	const lines: string[] = [];
+	const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
+	const current = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
+	if (index) lines.push(`[PI GOAL NOW goalId=${goal.id}${current ? ` taskId=${excerpt(current.id, 80, "tasks")}` : ""}]`);
+	if (index && current) {
+		const taskId = excerpt(current.id, 80, "tasks");
+		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
+		const next = after.find(row => row.task.status === "pending")?.task;
+		lines.push(`现在做：${taskId} · ${excerpt(current.title, 180, "tasks")}`);
+		const contract = (current.verificationContract ?? goal.verificationContract)?.trim();
+		if (contract && !settings?.disableContracts) lines.push(`验收：${excerpt(contract, 600, "tasks")}`);
+		lines.push(next ? `之后：${excerpt(next.id, 80, "tasks")} · ${excerpt(next.title, 180, "tasks")}` : "之后：无（这是最后一个待办）");
+		lines.push(`进度：${index.complete}/${index.ordered.length} 完成${index.pending.length > 0 ? `，剩 ${index.pending.length} 个` : ""}`);
+	} else if (index) {
+		const next = index.pending[0];
+		lines.push("下一步：还没有标记当前任务。");
+		if (next) {
+			const taskId = excerpt(next.id, 80, "tasks");
+			lines.push(`从第一个待办开始：${taskId} · ${excerpt(next.title, 180, "tasks")}`);
+			lines.push(`用 update_goal_task({task_id:"${taskId}", status:"start"}) 标记开始。`);
+		}
+		lines.push(`进度：${index.complete}/${index.ordered.length} 完成`);
+	} else {
+		lines.push(`[PI GOAL NOW goalId=${goal.id}]`);
+		lines.push("下一步：按上方目标继续推进；完成后用 update_goal({status:\"complete\"}) 申请独立审计。");
+	}
+	const { runs } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
+	if (runs) lines.push(runs);
+	if (settings?.showContextUsage === true) lines.push(contextUsageLine(contextUsage));
+	return lines.join("\n");
 }
 
 export function goalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
@@ -308,14 +347,4 @@ export function unfocusedOpenGoalsPrompt(openGoalCount: number): string {
 		"Do not choose or switch focus autonomously. Focus is human-owned intent.",
 		"Ask the user to run /goal-focus, /goal-list, or /goal-resume before doing goal work.",
 	].join("\n");
-}
-
-function formatUsage(goal: GoalRecord): string {
-	const bits: string[] = [];
-	if (goal.usage.activeSeconds > 0) {
-		const s = goal.usage.activeSeconds;
-		bits.push(`${Math.floor(s / 60)}m${s % 60}s`);
-	}
-	if (goal.usage.tokensUsed > 0) bits.push(`${goal.usage.tokensUsed} tokens`);
-	return bits.length > 0 ? bits.join(" · ") : "none";
 }
