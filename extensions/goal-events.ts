@@ -108,7 +108,7 @@ export function registerGoalEvents(core: GoalCore): void {
 			// Retain the policy block verbatim at its anchor so this request extends
 			// the previous one instead of displacing it; the pointer is replaced at
 			// the tail. Only genuinely new text is appended.
-			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, pointer: parts.pointer });
+			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, pointer: parts.pointer, window: loadGoalSettings(ctx.cwd).stateReanchorRequests });
 			return retained;
 		}
 		liveRetention.clear(sessionKey);

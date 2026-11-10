@@ -295,6 +295,46 @@ test("loadGoalSettings: objectiveMaxChars defaults to no limit and honors the en
 	assert.equal(loadGoalSettings("/tmp/does-not-exist", {}).objectiveMaxChars, 0, "unset resolves to the default 0 (no limit)");
 });
 
+// ── stateReanchorRequests (policy re-anchor window) ───────────────────
+
+test("parseGoalSettings: stateReanchorRequests accepts nonnegative integers, 0 allowed", () => {
+	assert.deepEqual(parseGoalSettings({ stateReanchorRequests: 0 }), { stateReanchorRequests: 0 });
+	assert.deepEqual(parseGoalSettings({ stateReanchorRequests: 24 }), { stateReanchorRequests: 24 });
+	assert.deepEqual(parseGoalSettings({ stateReanchorRequests: "8" }), { stateReanchorRequests: 8 });
+	assert.deepEqual(parseGoalSettings({ stateReanchorRequests: -1 }), {}, "negative rejected");
+	assert.deepEqual(parseGoalSettings({ stateReanchorRequests: 1.5 }), {}, "non-integer rejected");
+	assert.deepEqual(parseGoalSettings({ stateReanchorRequests: "abc" }), {}, "non-numeric string rejected");
+});
+
+test("parseSettingsLayer: invalid stateReanchorRequests produces a diagnostic instead of a value", () => {
+	for (const invalid of [-1, 1.5, "abc", null, {}, []]) {
+		const parsed = parseSettingsLayer({ stateReanchorRequests: invalid }, "project", "inline");
+		assert.equal(parsed.layer.stateReanchorRequests, undefined);
+		assert.ok(parsed.diagnostics.some(d => d.code === "invalid_value" && d.settingPath === "stateReanchorRequests"));
+	}
+});
+
+test("loadGoalSettings: stateReanchorRequests defaults to unset (window falls back to 24) and preserves an explicit 0", () => {
+	withTempDir((dir) => {
+		const configPath = goalSettingsPath(dir);
+		fs.mkdirSync(path.dirname(configPath), { recursive: true });
+		fs.writeFileSync(configPath, JSON.stringify({ stateReanchorRequests: 0 }), "utf8");
+		assert.equal(loadGoalSettings(dir, {}).stateReanchorRequests, 0, "0 (never re-anchor) is a real override");
+		assert.equal(loadGoalSettings("/tmp/does-not-exist", {}).stateReanchorRequests, undefined, "unset stays undefined so saves do not pin the default");
+	});
+});
+
+test("saveGoalSettingsFileConfig: keeps an explicit stateReanchorRequests and does not materialize the default", () => {
+	withTempDir((dir) => {
+		saveGoalSettingsFileConfig(dir, { ...loadGoalSettings(dir, {}), stateReanchorRequests: 0 });
+		let saved = JSON.parse(fs.readFileSync(goalSettingsPath(dir), "utf8"));
+		assert.equal(saved.stateReanchorRequests, 0);
+		saveGoalSettingsFileConfig(dir, { ...loadGoalSettings(dir, {}), stateReanchorRequests: undefined });
+		saved = JSON.parse(fs.readFileSync(goalSettingsPath(dir), "utf8"));
+		assert.equal("stateReanchorRequests" in saved, false, "unset must not pin today's default into the file");
+	});
+});
+
 // ── networkRecovery (provider-error recovery backoff) ─────────────────
 
 test("parseGoalSettings: networkRecovery accepts valid layers and rejects invalid leaves", () => {

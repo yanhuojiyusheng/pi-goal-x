@@ -18,6 +18,7 @@ import {
 	type SettingsMutation,
 	type SettingsScope,
 } from "./goal-settings.ts";
+import { MAX_STATE_REANCHOR_REQUESTS } from "./goal-live-retention.ts";
 import {
 	buildGoalListText,
 	buildUnfocusedOpenGoalsSummary,
@@ -388,6 +389,8 @@ export function registerGoalCommands(core: GoalCore): void {
 		{ key: "disableContracts", label: "disableContracts", section: "Goal behavior", kind: "boolean" },
 		{ key: "strictExecutionContract", label: "explicit execution contracts (opt-in)", section: "Goal behavior", kind: "boolean" },
 		{ key: "maxAutonomousRuns", label: "autonomous run allowance", section: "Goal behavior", kind: "positiveInteger" },
+		{ key: "stateReanchorRequests", label: "policy re-anchor window (0 = never)", section: "Goal behavior", kind: "positiveInteger",
+			help: "Fresh requests between moves of the retained policy block. Every move re-sends the history after its anchor once. 0 keeps the first anchor for the session." },
 		{ key: "showAutonomousRuns", label: "show autonomous runs line", section: "Goal behavior", kind: "boolean" },
 		{ key: "showContextUsage", label: "show context usage line", section: "Goal behavior", kind: "boolean" },
 		{ key: "stallTimeoutMinutes", label: "stall timeout (minutes)", section: "Goal behavior", kind: "positiveInteger" },
@@ -415,6 +418,7 @@ export function registerGoalCommands(core: GoalCore): void {
 		}
 		if (key === "subtaskDepth") return config.subtaskDepth !== undefined ? String(config.subtaskDepth) : "1";
 		if (key === "maxAutonomousRuns") return config.maxAutonomousRuns === 0 ? "0 (disabled)" : String(config.maxAutonomousRuns ?? "unlimited (default)");
+		if (key === "stateReanchorRequests") return config.stateReanchorRequests === undefined ? `${MAX_STATE_REANCHOR_REQUESTS} (default)` : config.stateReanchorRequests === 0 ? "0 (never)" : String(config.stateReanchorRequests);
 		if (key === "stallTimeoutMinutes") return config.stallTimeoutMinutes !== undefined ? String(config.stallTimeoutMinutes) : "0";
 		if (key === "objectiveMaxChars") return config.objectiveMaxChars !== undefined ? String(config.objectiveMaxChars) : "0";
 		if (key === "keybindings") return config.keybindings ? `${config.keybindings.dashboard.toggleExpand}, ${config.keybindings.dashboard.scrollUp}, ${config.keybindings.dashboard.scrollDown}` : "(default)";
@@ -569,7 +573,7 @@ export function registerGoalCommands(core: GoalCore): void {
 				}
 
 				if (row.kind === "positiveInteger") {
-					const min = row.path ? 1 : ((row.key === "stallTimeoutMinutes" || row.key === "objectiveMaxChars" || row.key === "maxAutonomousRuns") ? 0 : 1);
+					const min = row.path ? 1 : ((row.key === "stallTimeoutMinutes" || row.key === "objectiveMaxChars" || row.key === "maxAutonomousRuns" || row.key === "stateReanchorRequests") ? 0 : 1);
 					const actions = [`Set ${scope} override...`];
 					if (hasLocalOverride) actions.push(inheritLabel);
 					actions.push("Cancel");

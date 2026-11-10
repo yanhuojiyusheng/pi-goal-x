@@ -28,6 +28,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { renameAtomicSync } from "./storage/atomic-rename.ts";
+import { MAX_STATE_REANCHOR_REQUESTS } from "./goal-live-retention.ts";
 import { GOAL_COMMANDS, GOAL_KEY_ACTIONS, PAUSE_ORDERS, parseCommandPaths, parseGoalKeybinding, type GoalCommands, type GoalKeybinding, type PauseOrder } from "./goal-controls.ts";
 
 export const GOAL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -124,6 +125,13 @@ export interface GoalSettingsResolvedShape {
 	showAutonomousRuns?: boolean;
 	/** Include context-window occupancy in new prompt snapshots (off by default). */
 	showContextUsage?: boolean;
+	/**
+	 * Requests with fresh content between policy-block re-anchors (unset = 24,
+	 * `MAX_STATE_REANCHOR_REQUESTS`). Moving the retained policy block later costs
+	 * one cache break of everything between its old anchor and the tail. Zero
+	 * never re-anchors, so the block keeps its first anchor for the session.
+	 */
+	stateReanchorRequests?: number;
 	strictExecutionContract?: boolean;
 	/** Delay repeated executions without recognized work (off by default). */
 	idleContinuationBackoff?: boolean;
@@ -353,6 +361,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
 	"auditorProjectResources",
 	"stallTimeoutMinutes",
 	"maxAutonomousRuns",
+	"stateReanchorRequests",
 	"strictExecutionContract",
 	"idleContinuationBackoff",
 	"objectiveMaxChars",
@@ -436,6 +445,12 @@ export function parseSettingsLayer(
 				const n = typeof value === "number" ? value : typeof value === "string" && /^[0-9]+$/.test(value.trim()) ? Number(value) : NaN;
 				if (!Number.isSafeInteger(n) || n < 0) diagnostics.push(diagnostic("invalid_value", "maxAutonomousRuns must be a nonnegative safe integer (0 disables automatic continuation)", key));
 				else layer.maxAutonomousRuns = n;
+				break;
+			}
+			case "stateReanchorRequests": {
+				const n = typeof value === "number" ? value : typeof value === "string" && /^[0-9]+$/.test(value.trim()) ? Number(value) : NaN;
+				if (!Number.isSafeInteger(n) || n < 0) diagnostics.push(diagnostic("invalid_value", "stateReanchorRequests must be a nonnegative safe integer (0 disables re-anchoring)", key));
+				else layer.stateReanchorRequests = n;
 				break;
 			}
 			case "stallTimeoutMinutes":
@@ -857,6 +872,13 @@ function resolvedSettingsSnapshot(cwd: string, env: NodeJS.ProcessEnv): Settings
 		globalValue: global.layer.maxAutonomousRuns,
 		defaultValue: undefined,
 	}));
+	// Unset stays undefined so a settings save does not pin today's default into
+	// the file; the effective window falls back to MAX_STATE_REANCHOR_REQUESTS.
+	const stateReanchorRequests = track("stateReanchorRequests", resolveLeaf<number | undefined>({
+		projectValue: project.layer.stateReanchorRequests,
+		globalValue: global.layer.stateReanchorRequests,
+		defaultValue: undefined,
+	}));
 	const stallTimeoutMinutes = track("stallTimeoutMinutes", resolveLeaf<number>({
 		projectValue: project.layer.stallTimeoutMinutes,
 		globalValue: global.layer.stallTimeoutMinutes,
@@ -920,6 +942,7 @@ function resolvedSettingsSnapshot(cwd: string, env: NodeJS.ProcessEnv): Settings
 		goalsRoot,
 		stallTimeoutMinutes,
 		maxAutonomousRuns,
+		stateReanchorRequests,
 		idleContinuationBackoff,
 		strictExecutionContract,
 		objectiveMaxChars,
@@ -1285,6 +1308,7 @@ function buildPersistedLayer(settings: GoalSettings): Record<string, unknown> {
 	if (settings.idleContinuationBackoff !== undefined) persisted.idleContinuationBackoff = settings.idleContinuationBackoff;
 	if (settings.strictExecutionContract !== undefined) persisted.strictExecutionContract = settings.strictExecutionContract;
 	if (settings.maxAutonomousRuns !== undefined) persisted.maxAutonomousRuns = settings.maxAutonomousRuns;
+	if (settings.stateReanchorRequests !== undefined) persisted.stateReanchorRequests = settings.stateReanchorRequests;
 	if (settings.stallTimeoutMinutes !== undefined) persisted.stallTimeoutMinutes = settings.stallTimeoutMinutes;
 	if (settings.objectiveMaxChars !== undefined) persisted.objectiveMaxChars = settings.objectiveMaxChars;
 	if (settings.keybindings) persisted.keybindings = structuredClone(settings.keybindings);
@@ -1336,6 +1360,7 @@ export function effectiveSettingsReport(cwd: string, env: NodeJS.ProcessEnv = pr
 		{ key: "idleContinuationBackoff", label: "slow repeated idle replies (opt-in)", format: () => String(snapshot.value.idleContinuationBackoff) },
 		{ key: "strictExecutionContract", label: "explicit execution contracts (opt-in)", format: () => String(snapshot.value.strictExecutionContract) },
 		{ key: "maxAutonomousRuns", label: "autonomous run allowance", format: () => snapshot.value.maxAutonomousRuns === 0 ? "0 (disabled)" : String(snapshot.value.maxAutonomousRuns ?? "unlimited (default)") },
+		{ key: "stateReanchorRequests", label: "policy re-anchor window (0 = never)", format: () => snapshot.value.stateReanchorRequests === undefined ? `${MAX_STATE_REANCHOR_REQUESTS} requests (default)` : snapshot.value.stateReanchorRequests === 0 ? "never" : `${snapshot.value.stateReanchorRequests} requests` },
 		{ key: "stallTimeoutMinutes", label: "stall timeout (minutes)", format: () => String(snapshot.value.stallTimeoutMinutes) },
 		{ key: "objectiveMaxChars", label: "max objective length (0 = none)", format: () => String(snapshot.value.objectiveMaxChars) },
 		{ key: "networkRecovery", label: "network recovery attempts (0 = unbounded)", format: () => String(snapshot.value.networkRecovery?.maxAttempts ?? 0) },
