@@ -64,10 +64,11 @@ export function normalizeGoalScheduler(raw: unknown): GoalSchedulerState | undef
 }
 
 /**
- * Split scheduling text into an append-safe counter line and the standing
+ * Split scheduling text into an append-safe runs line and the standing
  * instructions. Instructions (next action, wait, admission) are cleared by
  * omission, so a retained stale copy would keep issuing a cancelled order:
- * they belong with the reset-on-change state, never with retained counters.
+ * they belong with the reset-on-change policy block, never with the replaced
+ * pointer block.
  */
 export function schedulerSummaryParts(s: GoalSchedulerState | undefined, limit?: number, showRuns = true, idleBackoff = false, commands?: GoalCommands): { runs: string; instructions: string; idlePacing?: string } {
 	// An unlimited allowance has no limit to report, so the runs line is left

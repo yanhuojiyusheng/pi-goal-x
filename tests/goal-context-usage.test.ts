@@ -20,16 +20,16 @@ test("context display defaults off and explicit true preserves the existing coun
  for (const usage of [undefined, {tokens: 0, contextWindow: 1000}, {tokens: 20, contextWindow: 1000}]) {
   for (const maxAutonomousRuns of [undefined, 10]) for (const showAutonomousRuns of [false, true]) {
    const enabled = goalPromptParts(goal, {showContextUsage: true, maxAutonomousRuns, showAutonomousRuns}, usage);
-   assert.match(enabled.counters, /Context snapshot:/);
+   assert.match(enabled.pointer, /Context snapshot:/);
    for (const value of [undefined, false]) {
     const hidden = goalPromptParts(goal, {showContextUsage: value, maxAutonomousRuns, showAutonomousRuns}, usage);
     assert.equal(hidden.state, enabled.state);
-    assert.equal(hidden.counters, enabled.counters.replace(`\n${contextUsageLine(usage)}`, ""));
-    assert.doesNotMatch(hidden.counters, /Context snapshot:|\n\n/);
+    assert.equal(hidden.pointer, enabled.pointer.replace(`\n${contextUsageLine(usage)}`, ""));
+    assert.doesNotMatch(hidden.pointer, /Context snapshot:|\n\n/);
    }
   }
  }
- assert.doesNotMatch(goalPromptParts(goal).counters, /Context snapshot:/);
+ assert.doesNotMatch(goalPromptParts(goal).pointer, /Context snapshot:/);
 });
 
 for (const mode of ["ordinary", "audit", "wait"]) test(`registered context toggles preserve the prefix and pending ${mode} state`, async () => {

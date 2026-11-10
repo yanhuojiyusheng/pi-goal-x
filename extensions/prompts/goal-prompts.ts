@@ -229,18 +229,18 @@ function retainedTaskChars(task: GoalTask): number {
   + (task.skipReason?.length ?? 0) + (task.subtasks?.reduce((n, child) => n + retainedTaskChars(child), 0) ?? 0);
 }
 
-export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; counters: string } {
-	// The policy block changes only when the goal itself changes; the second
-	// block changes when the current task changes. Splitting them lets
-	// request-only injection retain each at its own rate so consecutive provider
-	// requests stay prefix-stable.
+export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; pointer: string } {
+	// The policy block changes only when the goal itself changes; the pointer
+	// block changes when the current task or the usage clock changes. Splitting
+	// them lets request-only injection retain the big stable block verbatim at
+	// its anchor while replacing the small pointer at the tail.
 	// Scheduling instructions ride with the policy block: they are cleared by
 	// omission, so a retained copy would keep issuing a cancelled order.
 	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
 	const { instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
 	const limits = `Limits: lifetime tokens=${goal.tokenBudget ?? "none"}; runs=${settings?.maxAutonomousRuns ?? "unlimited"}.`;
 	const state = [fixed, instructions, limits, "Usage spans goal turns, not context. Latest snapshot supersedes earlier snapshots."].filter(Boolean).join("\n");
-	return { state, counters: nextStepBlock(goal, settings, contextUsage) };
+	return { state, pointer: nextStepBlock(goal, settings, contextUsage) };
 }
 
 /**
@@ -249,10 +249,12 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, conte
  * request — the position the model reads last — and carried only token counts.
  *
  * The header carries the goal's cumulative usage. That looks like decoration and
- * is not: it is what makes the block differ on every request, so retention
- * appends a fresh copy at the tail and the pointer never drifts behind the
- * newest turn. Retention's own byte bound then re-anchors the copy once per
- * window without any request counter of its own.
+ * is not: spending moves it, which makes the block differ on nearly every
+ * request, so retention drops the previous copy and appends a fresh one at the
+ * tail. The pointer therefore never drifts behind the newest turn. The policy
+ * block is what needs a window, and retention re-anchors that one on its own
+ * request counter (`MAX_STATE_REANCHOR_REQUESTS`); this block is replaced every
+ * request, so it needs no window of its own.
  */
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
 	const usage = formatUsage(goal);
@@ -265,23 +267,24 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 	if (index && current) {
 		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
 		const next = after.find(row => row.task.status === "pending")?.task;
-		lines.push(`现在做：${excerpt(current.title, 180, "tasks")}`);
+		lines.push(`Now: ${excerpt(current.title, 180, "tasks")}`);
 		const contract = (current.verificationContract ?? goal.verificationContract)?.trim();
-		if (contract && !settings?.disableContracts) lines.push(`验收：${excerpt(contract, 600, "tasks")}`);
-		lines.push(next ? `之后：${excerpt(next.id, 80, "tasks")} · ${excerpt(next.title, 180, "tasks")}` : "之后：无（这是最后一个待办）");
-		lines.push(`进度：${index.complete}/${index.ordered.length}`);
+		if (contract && !settings?.disableContracts) lines.push(`Done when: ${excerpt(contract, 600, "tasks")}`);
+		lines.push(next ? `Then: ${excerpt(next.id, 80, "tasks")} · ${excerpt(next.title, 180, "tasks")}` : "Then: none — this is the last pending task");
+		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
 	} else if (index) {
 		const next = index.pending[0];
-		lines.push("下一步：还没有标记当前任务。");
+		lines.push("Now: no task is marked current.");
 		if (next) {
 			const taskId = excerpt(next.id, 80, "tasks");
-			lines.push(`从第一个待办开始：${taskId} · ${excerpt(next.title, 180, "tasks")}`);
-			lines.push(`用 update_goal_task({task_id:"${taskId}", status:"start"}) 标记开始。`);
+			lines.push(`Start with the first pending task: ${taskId} · ${excerpt(next.title, 180, "tasks")}`);
+			lines.push(`Mark it current with update_goal_task({task_id:"${taskId}", status:"start"}).`);
 		}
-		lines.push(`进度：${index.complete}/${index.ordered.length}`);
+		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
 	} else {
 		lines.push(header());
-		lines.push("下一步：按上方目标继续推进；完成后用 update_goal({status:\"complete\"}) 申请独立审计。");
+		lines.push("Now: keep advancing the objective above.");
+		lines.push("When it is actually met, call update_goal({status:\"complete\"}) to request an independent audit.");
 	}
 	const { runs } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
 	if (runs) lines.push(runs);
@@ -290,8 +293,8 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 }
 
 export function goalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
-	const { state, counters } = goalPromptParts(goal, settings);
-	return `${state}\n${counters}`;
+	const { state, pointer } = goalPromptParts(goal, settings);
+	return `${state}\n${pointer}`;
 }
 
 /** Cumulative goal usage, or an empty string when the goal has spent nothing yet. */
@@ -306,7 +309,7 @@ function formatUsage(goal: GoalRecord): string {
 }
 
 function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
- // Stable policy comes first; changing counters are appended by goalPrompt.
+ // Stable policy comes first; the changing pointer is appended by goalPromptParts.
  // Bound individual data fields so essential rules can never be sliced off.
  return [
   `[PI GOAL ACTIVE goalId=${goal.id}]`,

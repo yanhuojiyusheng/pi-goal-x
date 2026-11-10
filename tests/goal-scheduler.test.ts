@@ -874,7 +874,7 @@ test("prompt cache: cleared scheduling instructions vanish from retained history
 });
 
 
-test("prompt cache: model changes and missing identities cannot replay another request's counters", async t => {
+test("prompt cache: model changes and missing identities cannot replay another request's pointer", async t => {
  const h = await fixture(t);
  await h.handlers.session_start!({}, h.ctx);
  const history = [{role: "user", content: "inspect", timestamp: 1}];

@@ -466,19 +466,19 @@ test("the closing block points at the current task, with usage as its clock", ()
 	goal.currentTaskId = "task-2";
 	const prompt = goalPrompt(goal);
 	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2 .*\]/);
-	assert.match(prompt, /现在做：Write the exporter/);
-	assert.match(prompt, /验收：Only filtered rows are exported/);
-	assert.match(prompt, /之后：task-3 · Document it/, "the pointer names the next task, not an earlier one");
+	assert.match(prompt, /Now: Write the exporter/);
+	assert.match(prompt, /Done when: Only filtered rows are exported/);
+	assert.match(prompt, /Then: task-3 · Document it/, "the pointer names the next task, not an earlier one");
 	assert.match(prompt, /\[PI GOAL NOW goalId=\S+ taskId=task-2 10m0s · 987654 tokens\]/, "the header carries usage; that is what re-anchors the pointer every request");
 	assert.doesNotMatch(prompt.slice(0, prompt.indexOf("[PI GOAL NOW")), /987654/, "usage never enters the stable policy block");
 
 	goal.currentTaskId = "task-3";
-	assert.match(goalPrompt(goal), /之后：无（这是最后一个待办）/);
+	assert.match(goalPrompt(goal), /Then: none — this is the last pending task/);
 
 	goal.currentTaskId = undefined;
-	assert.match(goalPrompt(goal), /从第一个待办开始：task-2 · Write the exporter/);
+	assert.match(goalPrompt(goal), /Start with the first pending task: task-2 · Write the exporter/);
 
 	const noTasks = { ...goal, taskList: undefined, currentTaskId: undefined };
-	assert.match(goalPrompt(noTasks), /按上方目标继续推进/);
-	assert.match(goalPrompt(goal, { disableTasks: true }), /按上方目标继续推进/);
+	assert.match(goalPrompt(noTasks), /keep advancing the objective above/);
+	assert.match(goalPrompt(goal, { disableTasks: true }), /keep advancing the objective above/);
 });

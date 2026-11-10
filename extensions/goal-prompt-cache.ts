@@ -7,10 +7,10 @@ import { asRecord } from "./goal-record.ts";
  * Implicit caches and cacheRetention=none have no marker and are untouched.
  * Reuse the provider's TTL and marker count rather than enabling caching here.
  *
- * The live tail may span several request-only blocks (stable goal state plus
- * volatile counters) and previously sent tails may be retained verbatim
- * mid-history for implicit-prefix stability. Every such block is transient:
- * the breakpoint must skip all of them and land on real history.
+ * The live tail spans two request-only blocks (the stable policy block and the
+ * per-request pointer). The policy block may be retained verbatim mid-history
+ * for implicit-prefix stability. Every such block is transient: the breakpoint
+ * must skip all of them and land on real history.
  */
 export function cacheGoalHistory(payload: unknown, liveContent: string | readonly string[] | undefined): unknown {
 	const live = liveContent === undefined

@@ -105,10 +105,10 @@ export function registerGoalEvents(core: GoalCore): void {
 		if (sessionKey === "unidentified") liveRetention.clear(sessionKey);
 		const parts = currentGoalContextParts(ctx);
 		if (parts) {
-			// Retain previously sent tails verbatim at their anchors so this
-			// request extends the previous one instead of displacing its tail.
-			// Only genuinely new state/counters content is appended.
-			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, counters: parts.counters });
+			// Retain the policy block verbatim at its anchor so this request extends
+			// the previous one instead of displacing it; the pointer is replaced at
+			// the tail. Only genuinely new text is appended.
+			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, pointer: parts.pointer });
 			return retained;
 		}
 		liveRetention.clear(sessionKey);
@@ -451,9 +451,9 @@ export function registerGoalEvents(core: GoalCore): void {
 		core.runningGoalId = core.state.goal?.status === "active" ? core.state.goal.id : null;
 	});
 
-	/** Request-only state: no live counters, focus, or reminders enter the system prefix. */
-	/** Request-only goal state split into a rarely-changing policy block and per-turn counters. Other branches are stable-only. */
-	function currentGoalContextParts(ctx: ExtensionContext): { state: string; counters?: string } | undefined {
+	/** Request-only state: no live goal block, focus, or reminders enter the system prefix. */
+	/** Request-only goal state split into a rarely-changing policy block and a per-request pointer. Other branches are stable-only. */
+	function currentGoalContextParts(ctx: ExtensionContext): { state: string; pointer?: string } | undefined {
 		const checkpoint = core.runtime.getCheckpointGoalId();
 		if (checkpoint !== null && (core.scheduler.isDenied() || !core.isActionableContinuationGoal(checkpoint))) {
 			return { state: staleContinuationPrompt(checkpoint, core.state.goal) };
@@ -520,9 +520,9 @@ export function registerGoalEvents(core: GoalCore): void {
   }
 		const activeGoal = core.state.goal;
 		const settings = loadGoalSettings(ctx.cwd);
-		const { state: policy, counters } = goalPromptParts(activeGoal, { ...settings, commands: core.loadedCommands }, ctx.getContextUsage?.());
-		// Rare transitional steering rides in the stable block; per-turn usage and
-		// scheduling counters stay in the volatile block so retention grows slowly.
+		const { state: policy, pointer } = goalPromptParts(activeGoal, { ...settings, commands: core.loadedCommands }, ctx.getContextUsage?.());
+		// Rare transitional steering rides in the stable block; the pointer stays
+		// last so the model reads the current task immediately before it acts.
 		let state = policy;
 		// F5: [GOAL STALLED] steering note when the detector fired.
 		const stalledNote = core.checkStall(ctx);
@@ -552,7 +552,7 @@ export function registerGoalEvents(core: GoalCore): void {
 				state = `${state}\n\n[POST-COMPACTION RESYNC goalId=${core.state.goal.id}]\nThe conversation was just compacted. Re-read the objective and continue from the actual artifacts/state; do not rely on memory of the prior chat.`;
 			}
 		}
-		return { state, counters };
+		return { state, pointer };
 	}
 
 	pi.on("agent_end", async (event, ctx) => {
