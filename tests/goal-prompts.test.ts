@@ -468,7 +468,7 @@ test("the closing block points at the current task, with usage as its clock", ()
 	const prompt = goalPrompt(goal);
 	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2 .*\]/);
 	assert.match(prompt, /Now: task-2 · Write the exporter/);
-	assert.match(prompt, /Done when: Only filtered rows are exported/);
+	assert.doesNotMatch(prompt, /Done when:/, "the pointer leaves the contract to the policy block");
 	assert.match(prompt, /Then: task-3 · Document it/, "the pointer names the next task, not an earlier one");
 	assert.match(prompt, /\[PI GOAL NOW goalId=\S+ taskId=task-2 10m0s · 987654 tokens\]/, "the header carries usage; that is what re-anchors the pointer every request");
 	assert.doesNotMatch(prompt.slice(0, prompt.indexOf("[PI GOAL NOW")), /987654/, "usage never enters the stable policy block");
@@ -512,7 +512,7 @@ test("the closing block still names an earlier pending task instead of claiming 
 	assert.match(goalPromptParts(current).pointer, /Then: task-1 · Investigate the failure/);
 
 	// A lone open task still reads as the last pending task.
-	current.taskList = { blockCompletion: false, tasks: [{ id: "task-2", title: "Ship the fix", status: "in_progress" }] } as GoalTaskList;
+	current.taskList = { blockCompletion: false, tasks: [{ id: "task-2", title: "Ship the fix", status: "in_progress" }] } as unknown as GoalTaskList;
 	assert.match(goalPromptParts(current).pointer, /Then: none — this is the last pending task/);
 });
 
@@ -563,7 +563,7 @@ test("the closing block points at the open step inside a phased task, not at the
 	assert.match(phaseFocused, /\[PI GOAL NOW goalId=\S+ taskId=p1\.1\]/);
 	assert.match(phaseFocused, /Now: p1\.1 · Create the directories/, "the step carries its id, so a nested plan needs no Phase line");
 	assert.doesNotMatch(phaseFocused, /Phase:/);
-	assert.match(phaseFocused, /Done when: Only src\/ is created/, "the innermost contract wins over the phase's");
+	assert.doesNotMatch(phaseFocused, /Done when:/, "the pointer leaves contracts to the policy block");
 	assert.match(phaseFocused, /Then: p1\.2 · Write the CLI entry/, "the next step is the sibling, not the phase's own child again");
 	// Focusing the child directly reads the same, so inheritance and focus agree.
 	assert.equal(goalPromptParts({ ...goal, currentTaskId: "p1.1" }).pointer, phaseFocused);

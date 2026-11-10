@@ -58,7 +58,7 @@ const replaceWithPointer = value => {
 
 /**
  * The pointer's own grammar. Exactly one shape is accepted, line for line:
- *   - current task: `Now: …`, optional `Done when: …`, `Then: …`, `Progress: n/m`
+ *   - current task: `Now: …`, `Then: …`, `Progress: n/m`
  *   - pending task, none current: `Now: no task is marked current.`,
  *     `Start with the first pending task: …`,
  *     `Mark it current with update_goal_task({task_id:"…", status:"start"}).`,
@@ -72,7 +72,6 @@ const replaceWithPointer = value => {
  */
 const RELEASE_ONLY_LINE = /^(Goal snapshot|Autonomous runs):/;
 const NOW_LINE = /^Now: \S/;
-const DONE_WHEN_LINE = /^Done when: \S/;
 const THEN_LINE = /^Then: \S/;
 const PROGRESS_LINE = /^Progress: \d+\/\d+$/;
 const NO_CURRENT_LINE = "Now: no task is marked current.";
@@ -88,10 +87,7 @@ function pointerLinesOk(body) {
  if(first===NO_TASK_LINE) return body.length===2&&body[1]===WHEN_MET_LINE;
  if(!NOW_LINE.test(first)) return false;
  const rest=body.slice(1);
- const hasDone=rest.length===3;
- if(hasDone&&!DONE_WHEN_LINE.test(rest[0])) return false;
- if(rest.length!==2&&!hasDone) return false;
- return THEN_LINE.test(rest[hasDone?1:0])&&PROGRESS_LINE.test(rest[hasDone?2:1]);
+ return rest.length===2&&THEN_LINE.test(rest[0])&&PROGRESS_LINE.test(rest[1]);
 }
 
 function pointerBodyOk(text,releaseContext) {

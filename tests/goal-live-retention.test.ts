@@ -75,7 +75,7 @@ test("the policy block is re-anchored once per window of requests", () => {
 	assert.equal(positions[window], 1 + window, "the next request keeps the new anchor");
 	assert.equal(positions[window - 1], 1 + window, "the exhausted window re-anchors it at the current tail");
 	assert.equal(positions[2 * window - 1], 1 + 2 * window, "the following window re-anchors again");
-	assert.ok(positions[window - 1] > positions[window - 2], "the re-anchor moves the block later");
+	assert.ok(positions[window - 1]! > positions[window - 2]!, "the re-anchor moves the block later");
 });
 
 test("an identical retry never advances the re-anchor window", () => {

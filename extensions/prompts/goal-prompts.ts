@@ -264,9 +264,11 @@ function taskPath(tasks: readonly GoalTask[], id: string): GoalTask[] | undefine
 }
 
 /**
- * The second injected block: what to do NOW, what "done" means for it, and the
- * step after it. It replaced the usage snapshot, which sat at the end of the
- * request — the position the model reads last — and carried only token counts.
+ * The second injected block: what to do NOW and the step after it. It replaced
+ * the usage snapshot, which sat at the end of the request — the position the
+ * model reads last — and carried only token counts. Contracts stay out: they
+ * are turn-stable, so the policy block already carries them, and repeating one
+ * here made a single line the largest part of the block.
  *
  * "Now" is the deepest open step, named by id and title so a phased plan reads
  * as `p1.1.1 · Redis adapter`, not as its phase: a plan marks the phase current,
@@ -302,8 +304,6 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 		const pathIds = new Set(path.map(task => task.id));
 		const next = after.find(row => row.task.status === "pending")?.task ?? index.pending.find(task => !pathIds.has(task.id));
 		lines.push(`Now: ${current.id} · ${excerpt(current.title, 180, "tasks")}`);
-		const contract = ([...path].reverse().find(task => task.verificationContract?.trim())?.verificationContract ?? goal.verificationContract)?.trim();
-		if (contract && !settings?.disableContracts) lines.push(`Done when: ${excerpt(contract, 600, "tasks")}`);
 		lines.push(next ? `Then: ${next.id} · ${excerpt(next.title, 180, "tasks")}` : "Then: none — this is the last pending task");
 		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
 	} else if (index) {

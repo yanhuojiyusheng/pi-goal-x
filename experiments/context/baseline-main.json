@@ -1,5 +1,5 @@
 {
-  "generatedAtCommit": "09926bf",
+  "generatedAtCommit": "0.34.1-pointer-drops-the-contract",
   "measuredAt": "2026-11-10",
   "fixtures": [
     {
@@ -224,17 +224,17 @@
         "sdkGuidanceChars": 1141,
         "hostToolSchemaChars": 2555,
         "childRequestChars": 0,
-        "extensionMessageChars": 3567,
-        "extensionAttributableChars": 9362,
+        "extensionMessageChars": 3504,
+        "extensionAttributableChars": 9299,
         "baseSystemChars": 3671,
         "extensionSystemChars": 0,
-        "goalStateChars": 2629,
+        "goalStateChars": 2567,
         "checkpointChars": 231,
         "historicalCheckpointChars": 154,
         "toolSchemaChars": 4654,
-        "messageChars": 3968,
-        "totalSerializedChars": 14851,
-        "estimatedTokens": 3713
+        "messageChars": 3905,
+        "totalSerializedChars": 14788,
+        "estimatedTokens": 3697
       },
       "semantic": {
         "objective": 1,
@@ -868,10 +868,10 @@
     }
   ],
   "totals": {
-    "totalSerializedChars": 280500,
-    "estimatedTokens": 70133,
+    "totalSerializedChars": 280437,
+    "estimatedTokens": 70117,
     "childRequestChars": 15228,
-    "combinedSerializedChars": 295728,
-    "extensionAttributableChars": 165259
+    "combinedSerializedChars": 295665,
+    "extensionAttributableChars": 165196
   }
 }

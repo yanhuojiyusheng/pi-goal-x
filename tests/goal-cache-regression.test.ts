@@ -54,7 +54,7 @@ test("approved display removal must be exact and confined to a goal counter bloc
 test("the pointer delta must reproduce the release usage segment and context line", () => {
  const wrap = (text: string) => ({version: 1, rows: [{id: "pointer", ...summarize({messages: [{role: "user", content: text}]})}]});
  const baseline = wrap("Goal snapshot: 75000 tokens\nContext snapshot: unavailable\n");
- const pointer = "Now: Ship it\nDone when: suite green\nThen: task-3 · Document it\nProgress: 2/5";
+ const pointer = "Now: Ship it\nThen: task-3 · Document it\nProgress: 2/5";
  // Hidden context (the approved default) and explicit context both pass.
  assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}`)).approvedDifferences.length, 1);
  assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}\nContext snapshot: unavailable`)).approvedDifferences.length, 1);
