@@ -4,6 +4,15 @@ All notable changes to pi-goal-x are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- End every goal prompt with one next-step pointer (`[PI GOAL NOW …]` with `Now`, optional `Done when`, `Then` and `Progress`) instead of the accumulated `Goal snapshot` counters. Retention keeps the goal policy block plus only the latest pointer, so a long session holds at most two goal blocks and pays one cache break per request while the pointer advances.
+- Add `stateReanchorRequests` to `/goal-settings`: fresh requests between moves of the retained policy block (default 24; `0` keeps the first anchor for the session). Each move re-sends the history after its anchor once.
+
+### Fixed
+
+- Point `Then:` at the next pending task even when it sits earlier in document order, and never truncate task IDs in `Now:`, `Then:` or `update_goal_task` examples.
+
 ## [0.34.1] — 2026-10-27
 
 Includes #118.

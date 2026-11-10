@@ -1,0 +1,173 @@
+# Implementation log
+
+## 2026-11-10 — intake
+
+- Reviewed `main` (`b0fc15e`, 0.34.1) against `feat/long-goal-drift-guards` (`09926bf`,
+  10 commits, 21 files, +680/−357). Baseline validation on the branch: 1235 tests / 87
+  files pass, ESLint clean, `context:gate` PASS (24 fixtures), `context:cache-gate` PASS
+  (408 scenarios, 288 approved display deltas, 1000 bounded transitions).
+- `npx tsc --noEmit` / `npm run check` cannot run here: `Unable to resolve
+  @typescript/typescript-linux-x64` from the global npm install. Environment defect, not a
+  code finding. No type-check claim is made anywhere in this spec.
+- Gate evidence kept at `/tmp/goal-cache-evidence-XY0Ojz` while this campaign runs:
+  baseline corpus `{transitions:1000, breaks:32, maxRetainedMessages:32,
+  maxRetainedBytes:575}`, candidate corpus `{transitions:1000, breaks:999,
+  maxRetainedMessages:2, maxRetainedBytes:59}`, 288 approved deltas, all
+  `reason:"next-step-pointer"`, `replacedBlocks:1`.
+- `npm run context:measure` rewrites `baseline-main.json` with
+  `generatedAtCommit: process.env.CONTEXT_BASELINE_LABEL ?? "main"`; the committed label was
+  `0.34.1-now-names-the-step` and does not correspond to the branch HEAD. The working-tree
+  change from that run was reverted; t6 relabels with `git describe`.
+
+### Findings accepted into this campaign
+
+- P1.1 `tests/goal-live-retention.test.ts:58-71` window test never grows `base`, so all
+  three anchor-position assertions are tautologies (anchor index is always 1).
+- P1.2 retained-block bounds stayed at the release model (`<=32` blocks, `<=4096` bytes) in
+  `cache-report.mjs:79-80`, `cache-compare.mjs:121-122`, `retention-check.mjs:24-25`.
+- P1.3 corpus `breaks` conflates pointer replacement with policy re-anchor (999/1000 vs
+  32/1000).
+- P1.4 `tests/prompt-cache-sdk-worker.ts:204` still asserts `<= 31` counter copies.
+- P3.1 `goal-prompts.ts:300` `Then: none — this is the last pending task` is false when a
+  pending task exists earlier in document order.
+- P3.2 `goal-prompts.ts:318` inserts an `excerpt()`-truncated id into the
+  `update_goal_task({task_id:"…"})` example.
+- P3.3 `formatUsage` returning `""` means a goal that has spent nothing keeps a constant
+  pointer; the `nextStepBlock` docstring claims per-request change unconditionally.
+- P3.4 `approvePointer` validates only the header and context line, and no fixture carries a
+  `currentTaskId`, so `Now`/`Done when`/`Then` have no gate coverage.
+- P3.5 the three `splitsToolBatch` wire-shape tests (`toolResult`, `tool`, `tool_result`)
+  were deleted; only the delayed-result case still exercises the guard.
+- P3.6 the `approvePointer` docstring claims field-by-field approval that the code does not
+  perform.
+- Process: no spec directory for the branch, `CHANGELOG.md` `[Unreleased]` empty, baseline
+  label stale.
+
+User steering: fix P1 + P3 + process; keep the default window; expose it as the
+`stateReanchorRequests` setting (0 = never re-anchor).
+
+## 2026-11-10 — planning
+
+- Wrote `PRODUCT.md` (behavior, invariants, scope, constraints) and `TECH.md` (state
+  machine, window setting design, seven settings touchpoints, gate rework, test plan,
+  mutation evidence table).
+- Recorded the design decision not to touch the retention model itself: the two-block split
+  and pointer replacement stay as shipped on the branch.
+
+## 2026-11-10 — t2: verification teeth
+
+- Window test rewritten (`tests/goal-live-retention.test.ts:58`): `base` grows one assistant
+  turn per request, so a frozen anchor and a re-anchored one land on different indexes.
+  Asserts index 2 → 25 at request 24 → 49 at request 48, plus exactly one policy copy.
+- **The rewritten test immediately caught a production off-by-one.** `applies += 1` ran even
+  on the request that performed the reset, so windows after the first were 23 fresh requests,
+  not 24 (resets at 24, 47, 70…). Fixed by only incrementing in the `else` branch:
+  the reset request no longer consumes window budget. Window is now exactly 24, and the
+  corpus reflects it (`policyAnchorMoves: 41` ≈ 1000/24).
+- Bounds: `retention-check.mjs` now asserts `transientContents.length <= 2`;
+  `cache-compare.mjs` asserts `candidate.corpus.maxRetainedMessages <= 2`,
+  `maxRetainedBytes <= 2048`, `pointerReplacements === transitions - 1`,
+  `policyAnchorMoves <= ceil(transitions/24) + 1`, and `breaks > 0` (upper bound dropped).
+- Deviation from the task contract, with reason: `cache-report.mjs` cannot hard-code `<= 2`
+  because `cache-gate.mjs` copies that driver into the archived 0.34.1 tree, which keeps up
+  to 32 counter tails by design. Implemented as `buildReport({blockBound = 2})` plus
+  `--retention=legacy` (bound 32), passed by `cache-gate.mjs` only on the baseline run.
+  The candidate therefore still asserts `<= 2` inside the driver, and the tightened
+  candidate-only bounds also sit in `cache-compare.mjs`. First attempt failed the baseline
+  run with `LIVE_CONTEXT_TYPE is not defined` (the release does not export it); the corpus
+  now classifies live blocks by `role === "custom"`.
+- `breaks` split into `pointerReplacements` and `policyAnchorMoves`. Measured: candidate
+  `{breaks: 999, pointerReplacements: 999, policyAnchorMoves: 41, maxRetainedMessages: 2,
+  maxRetainedBytes: 59}`; release `{32, 32, 32, 32, 575}`.
+- `tests/prompt-cache-sdk-worker.ts:204` now asserts exactly one `Goal snapshot:` copy.
+- `splitsToolBatch` extended to the `tool_result` role (it already covered the `toolResult`
+  and `tool` roles and result-bearing blocks), and the single delayed-result test became a
+  loop over all three roles — the shapes the deleted tests covered.
+- Mutation evidence:
+  - disable the window reset (`if (false)`) → "the policy block is re-anchored once per
+    window of requests" fails (21 pass / 1 fail).
+  - force `splitsToolBatch` to return false → all three delayed-result tests fail
+    (19 pass / 3 fail).
+  Both mutations reverted.
+- Validation after t2: `npm test` 1237 pass / 87 files; `npm run lint` clean;
+  `context:gate` PASS; `context:cache-gate` PASS; `retention-check` maxRetainedTails 2;
+  e2e `goal-prompt-cache-sdk` passes.
+
+## 2026-11-10 — t3: configurable re-anchor window
+
+- `stateReanchorRequests` landed in all six `extensions/goal-settings.ts` places: interface,
+  allowed-key list, validation, `resolveLeaf`, export, persist, plus the `/goal-settings`
+  row (`kind: "positiveInteger"`, label "policy re-anchor window (0 = never)").
+  `resolveLeaf` uses `defaultValue: undefined`, not 24, because
+  `saveGoalSettingsFileConfig` persists the resolved layer: materializing 24 would write
+  today's default into every user file and pin it.
+- `extensions/goal-live-retention.ts` consumes `fresh.window ?? MAX_STATE_REANCHOR_REQUESTS`;
+  `0` never re-anchors (the session keeps its first anchor), and the reset request does not
+  consume window budget (exact 24-request cadence from t2).
+- Contract conflict, resolved by keeping t2 and documenting it (TECH.md §1.2): the task also
+  asked for a byte-identical default path, but the branch shipped 23-request windows after
+  the first and t2 fixed them to exactly 24, which necessarily moves later reset points.
+  No existing assertion was relaxed; the default differs only in the reset cadence.
+- Tests: four settings cases (parse 0/24/"8", reject -1/1.5/"abc"; layer diagnostics;
+  load keeps 0 and leaves unset undefined; save does not materialize the default) and three
+  retention cases (custom window 3 anchors at 2→4→4→7; `run(24, 8)` deep-equals
+  `run(undefined, 8)`; window 0 over 100 growing requests keeps index 2 with one policy
+  copy). First settings attempt loaded before writing and hit the settings cache
+  (`undefined !== 0`); fixed by writing first and using `/tmp/does-not-exist` for the
+  unset case.
+- Docs: `docs/prompt-caching.md:27` and the README settings row describe the default and
+  `0`.
+- Mutation evidence: drop the `window > 0` guard → the "0 keeps the first anchor" test
+  fails (22 pass / 1 fail). Reverted.
+
+## 2026-11-10 — t4: pointer text correctness
+
+- `Then:` now comes from `after.find(pending)` and falls back to `index.pending` minus the
+  current task's path (`pathIds`), so "Then: none — this is the last pending task" is only
+  emitted for a lone open task; an earlier pending task is named instead.
+- Task IDs are never excerpted: `Now:`, `Then:`, the header and the `update_goal_task`
+  example carry the full id; only titles/contracts stay bounded excerpts.
+- The `nextStepBlock` docstring now says the block changes "on nearly every request once it
+  has spent something" instead of unconditionally.
+- The old assertion expecting "Then: none" for a three-task tree encoded the bug and was
+  updated to expect `Then: task-2 · Write the exporter`.
+- Mutation evidence: remove the `index.pending` fallback (`?? undefined`) → both
+  closing-block tests fail (30 pass / 2 fail). Reverted.
+
+## 2026-11-10 — t5: pointer grammar and gate coverage
+
+- `approvePointer` now validates the body line for line against exactly three shapes:
+  current task (`Now`, optional `Done when`, `Then`, `Progress`); no current task
+  (`Now: no task is marked current.`, `Start with the first pending task: …`,
+  `Mark it current with update_goal_task({task_id:"…", status:"start"}).`, `Progress`);
+  no task list (`Now: keep advancing the objective above.`,
+  `When it is actually met, call update_goal({status:"complete"}) …`). A missing,
+  reordered or extra body line is not approved. The delta comment no longer claims
+  "field by field"; it states that the string comparison itself is never relaxed and that
+  the only approved change is a counter block replaced by one well-formed pointer.
+- 12 negative regression cases added: `Then` missing, reordered, `Done when` after `Then`,
+  `Then` missing after `Done when`, empty `Now:`, partial no-current shape, missing
+  completion instruction, extra trailing line.
+- Coverage correction: the gate already covers current tasks. `fixtures.mjs:70`
+  `"current-contracted-task"` sets `currentTaskId: "t3"` plus a verification contract, and
+  `fixtures.mjs:119` `"get-goal-default-and-verbose"` sets `currentTaskId: "t2"`. The gate
+  evidence has 288 pointer rows and 12 of them carry `Done when:` (the contracted fixture
+  in each flavor/tier pair), so no new fixture and no `baseline-main.json` regeneration
+  were needed for coverage; the approved-delta count stays 288.
+- Mutation evidence: skip `pointerLinesOk` → the pointer regression test fails
+  (3 pass / 2 fail). Reverted.
+
+## 2026-11-10 — t6: release notes and baseline label
+
+- `CHANGELOG.md` `[Unreleased]` records the user-visible changes: the prompt tail is one
+  next-step pointer instead of accumulated `Goal snapshot` counters, retention keeps the
+  policy block plus only the latest pointer (two blocks, one deliberate cache break per
+  advancing request), the new `stateReanchorRequests` setting, and the `Then:`/ID fixes.
+- `CONTEXT_BASELINE_LABEL=$(git describe --tags --always) npm run context:measure` relabels
+  `experiments/context/baseline-main.json`: the diff is exactly one line
+  (`"generatedAtCommit": "09926bf"`), and every measurement stays byte-identical, confirming
+  t2–t5 did not drift the capture corpus.
+- `tsc` remains unavailable on this machine (`Unable to resolve
+  @typescript/typescript-linux-x64`), so no type-check claim is made. Validation is
+  `npm test`, `npm run lint`, `npm run context:gate`, `npm run context:cache-gate` and
+  `node experiments/context/retention-check.mjs`.
