@@ -30,17 +30,103 @@ export function summarize(payload, transients=[]) {
  };
 }
 
-/** No payload normalization: a permitted display delta must match an exact block. */
+/**
+ * Verified delta #1 (0.34.1, Milestone F): hide the fresh context line. The only
+ * permitted edit is removing that one line from a release counter block.
+ */
+const hideContextLine = value => typeof value==='string' && value.startsWith('Goal snapshot:') && value.includes('\nContext snapshot: unavailable\n')
+ ? value.replace('\nContext snapshot: unavailable\n','\n') : undefined;
+
+/**
+ * Verified delta #2 (this tree): the release `Goal snapshot:` counter block is
+ * replaced by the next-step pointer block. Approved field by field, never by
+ * relaxing the string comparison: the block must still be one user/input text
+ * block in the same position, the release usage segment must survive in the
+ * pointer header, and a release context line must be reproduced verbatim as the
+ * pointer's final line. Anything else stays an unexplained edit.
+ */
+const replaceWithPointer = value => {
+ if(typeof value!=='string' || !value.startsWith('Goal snapshot:')) return undefined;
+ const lines=value.split('\n').filter(line=>line.length>0);
+ const usage=lines[0].slice('Goal snapshot:'.length).trim();
+ const context=lines.slice(1).find(line=>line.startsWith('Context snapshot:'));
+ if(lines.length>1 && !context) return undefined;
+ if(lines.slice(1).some(line=>line!==context)) return undefined;
+ return {usage,context};
+};
+
+/**
+ * The pointer's own grammar: a bracketed `[PI GOAL NOW …]` header, a first body
+ * line that states the next step, and no release-only line left behind. A
+ * release `Context snapshot:` line may be dropped (delta #1) or reproduced
+ * verbatim as the last line, never rewritten.
+ */
+const RELEASE_ONLY_LINE = /^(Goal snapshot|Autonomous runs):/;
+function pointerBodyOk(text,releaseContext) {
+ const lines=text.split('\n');
+ const contextLines=lines.filter(line=>line.startsWith('Context snapshot:'));
+ const body=lines.slice(1).filter(line=>!line.startsWith('Context snapshot:'));
+ if(body.length===0||!body[0]?.startsWith('Now: ')||body[0].length<='Now: '.length) return false;
+ if(body.some(line=>RELEASE_ONLY_LINE.test(line))) return false;
+ if(contextLines.length>1) return false;
+ if(contextLines.length===1) {
+  if(releaseContext===undefined) return false;
+  if(contextLines[0]!==releaseContext) return false;
+  if(lines.at(-1)!==contextLines[0]) return false;
+ }
+ return true;
+}
+
+/** Map a release block onto the pointer block, or 0 when the shape is not approved. */
+function approvePointer(baselineRaw,candidateRaw) {
+ const pairs=[];
+ function walk(a,b) {
+  if(typeof a==='string') {
+   if(a===b) return;
+   const replacement=replaceWithPointer(a);
+   if(!replacement || typeof b!=='string') {pairs.push(false);return;}
+   const header=(b.split('\n')[0])??'';
+   const usageOk=replacement.usage==='none'
+    ? !/(^|\s)\d+ tokens/.test(header)
+    : header.includes(replacement.usage);
+   pairs.push(header.startsWith('[PI GOAL NOW ') && header.endsWith(']') && usageOk && pointerBodyOk(b,replacement.context));
+   return;
+  }
+  if(a===null||typeof a!=='object') {if(a!==b) pairs.push(false);return;}
+  if(Array.isArray(a)) {
+   if(!Array.isArray(b)||a.length!==b.length) {pairs.push(false);return;}
+   for(let i=0;i<a.length;i++) walk(a[i],b[i]);
+   return;
+  }
+  if(!b||typeof b!=='object'||Array.isArray(b)) {pairs.push(false);return;}
+  const keys=new Set([...Object.keys(a),...Object.keys(b)]);
+  if(keys.size!==Object.keys(a).length||keys.size!==Object.keys(b).length) {pairs.push(false);return;}
+  for(const key of keys) walk(a[key],b[key]);
+ }
+ walk(baselineRaw,candidateRaw);
+ const replacements=pairs.filter(Boolean).length;
+ return pairs.every(Boolean)&&replacements>0?replacements:0;
+}
+
+/**
+ * No payload normalization: a permitted delta must match an exact approved
+ * transformation of the release block, never a fuzzy or order-insensitive match.
+ */
 export function compareReports(baseline, candidate) {
  assert.equal(candidate.version,baseline.version);
  assert.ok(baseline.rows.length>0,'empty baseline');
  assert.deepEqual(candidate.rows.map(r=>r.id),baseline.rows.map(r=>r.id),'missing/reordered scenario');
- if(baseline.corpus) assert.deepEqual(candidate.corpus,baseline.corpus,'retention bounds/reset frequency changed');
+ if(baseline.corpus) {
+  assert.equal(candidate.corpus.transitions,baseline.corpus.transitions,'retention corpus length changed');
+  assert.ok(candidate.corpus.maxRetainedMessages<=32,'retained block count grew');
+  assert.ok(candidate.corpus.maxRetainedBytes<=4096,'retained bytes grew');
+  assert.ok(candidate.corpus.breaks>0&&candidate.corpus.breaks<candidate.corpus.transitions,'unexpected reset frequency');
+ }
  if(baseline.dependencies) assert.equal(candidate.dependencies,baseline.dependencies,'comparison dependencies differ');
  if(baseline.investigation) {
   assert.deepEqual(candidate.investigation.stateChanges.map(({kind,prefixBreak})=>({kind,prefixBreak})),baseline.investigation.stateChanges.map(({kind,prefixBreak})=>({kind,prefixBreak})),'state reset classification changed');
   assert.equal(candidate.investigation.occupancy[1].breaks,0,'hidden occupancy invalidated retention');
-  assert.equal(candidate.investigation.occupancy[1].appendedCounters,0,'hidden occupancy added redundant counters');
+  assert.equal(candidate.investigation.occupancy[1].changedRequests,0,'hidden occupancy changed the request');
   for(const [n,step] of candidate.investigation.stateChanges.entries()) assert.ok(step.reusableBlocks>=baseline.investigation.stateChanges[n].reusableBlocks,'unchanged workflow lost reusable history');
  }
  const differences=[];
@@ -52,10 +138,20 @@ export function compareReports(baseline, candidate) {
   assert.equal(b.blocks.length,a.blocks.length,`${b.id}: unexpected block count`);
   for(let j=0;j<a.blocks.length;j++) {
    if(a.blocks[j].hash===b.blocks[j].hash) continue;
+   // Delta #2 first: a release counter block becomes the pointer (it may also
+   // carry the hidden context line, so both deltas can describe one block).
+   const replaced=approvePointer(a.blocks[j].raw,b.blocks[j].raw);
+   if(replaced>0) {
+    differences.push({scenario:b.id,block:j,reason:'next-step-pointer',replacedBlocks:replaced,removedBytes:a.blocks[j].bytes-b.blocks[j].bytes});
+    continue;
+   }
+   // Explicit opt-in keeps the release context line: the pointer replacement
+   // above is the only delta it may show.
    assert.ok(!b.id.endsWith('/context-explicit-true'),`${b.id}: explicit opt-in differs from release`);
    let edits=0;
    const expected=value=>{
-    if(typeof value==='string' && value.startsWith('Goal snapshot:') && value.includes('\nContext snapshot: unavailable\n')) {edits++;return value.replace('\nContext snapshot: unavailable\n','\n');}
+    const hidden=hideContextLine(value);
+    if(hidden!==undefined) {edits++;return hidden;}
     if(Array.isArray(value))return value.map(expected);
     if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,expected(v)]));
     return value;
@@ -98,15 +194,15 @@ export function investigateCache() {
  for(const showContextUsage of [true,false]) {
   const retained=new LiveTailRetention();
   const base=[userMessage('Unchanged history')];
-  let prior,breaks=0,appendedCounters=0,totalRequestBytes=0;
+  let prior,breaks=0,changedRequests=0,totalRequestBytes=0;
   for(let n=0;n<80;n++) {
    const result=retained.apply('occupancy',base,goalPromptParts(goal,{showContextUsage},{tokens:n+1,contextWindow:1000}));
    if(prior && JSON.stringify(result.messages.slice(0,prior.length))!==JSON.stringify(prior))breaks++;
-   if(prior && JSON.stringify(result.messages)!==JSON.stringify(prior))appendedCounters++;
+   if(prior && JSON.stringify(result.messages)!==JSON.stringify(prior))changedRequests++;
    totalRequestBytes+=Buffer.byteLength(JSON.stringify(result.messages));
    prior=result.messages;
   }
-  occupancy.push({showContextUsage,requests:80,breaks,appendedCounters,totalRequestBytes});
+  occupancy.push({showContextUsage,requests:80,breaks,changedRequests,totalRequestBytes});
  }
  return {stateChanges,occupancy,decision:'retain policy resets; task progress changes active task instructions and completion gates'};
 }

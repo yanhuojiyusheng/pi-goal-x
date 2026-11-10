@@ -13,17 +13,23 @@ for (const shape of ['text', 'tool-output', 'image']) for (const bytes of [64 * 
    : {role:'user',content:[{type:'image',mimeType:'image/png',data}]};
  });
  const retention = new LiveTailRetention();
- const serialize = [], retained = [];
+ const serialize = [], retained = [], retainedSizes = [], retainedBytes = [];
  for (let i=0;i<45;i++) {
   let start=performance.now(); JSON.stringify(base); const plain=performance.now()-start;
-  start=performance.now(); const result=retention.apply('fixture',base,{state:'current policy',counters:`snapshot ${i}`}); const elapsed=performance.now()-start;
+  // Fixed-width content keeps this a history-growth check, not a digit-count one.
+  const step = String(i).padStart(3, '0');
+  // Both fields ride so this gate covers every retention model: the archived
+  // release accumulates `counters`, this tree replaces `pointer`.
+  start=performance.now(); const result=retention.apply('fixture',base,{state:'current policy',counters:`snapshot ${step}`,pointer:`[PI GOAL NOW goalId=fixture]\nNow: step ${step}`}); const elapsed=performance.now()-start;
   assert.ok(result.transientContents.length<=32);
   assert.ok(result.transientContents.reduce((n,text)=>n+Buffer.byteLength(text),0)<=4096+14);
+  retainedSizes.push(result.transientContents.length);
+  retainedBytes.push(result.transientContents.reduce((n,text)=>n+Buffer.byteLength(text),0));
   if(i>=5) {serialize.push(plain);retained.push(elapsed);}
  }
  const baselineMs=median(serialize), retentionMs=median(retained);
  // Existing project's absolute 10ms allowance protects the noise floor.
  assert.ok(retentionMs<=Math.max(baselineMs*1.5,baselineMs+10), `retention CPU regression: ${bytes} bytes, ${retentionMs}ms`);
- rows.push({shape,historyBytes:bytes,serializationMedianMs:+baselineMs.toFixed(3),retentionMedianMs:+retentionMs.toFixed(3)});
+ rows.push({shape,historyBytes:bytes,maxRetainedTails:Math.max(...retainedSizes),maxRetainedBytes:Math.max(...retainedBytes),serializationMedianMs:+baselineMs.toFixed(3),retentionMedianMs:+retentionMs.toFixed(3)});
 }
 console.log(JSON.stringify({retention:rows},null,2));

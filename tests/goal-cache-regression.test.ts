@@ -27,7 +27,7 @@ test("cache comparison rejects missing scenarios, early text, schemas, options, 
 test("state-change measurement reproduces #108 and rejects extra or unexplained resets", () => {
  const investigation = investigateCache();
  assert.equal(investigation.stateChanges.filter((step: any) => step.prefixBreak).length, 4);
- assert.equal(investigation.occupancy[1].appendedCounters, 0);
+ assert.equal(investigation.occupancy[1].changedRequests, 0);
  assert.equal(investigation.occupancy[1].breaks, 0);
  assert.ok(investigation.occupancy[1].totalRequestBytes < investigation.occupancy[0].totalRequestBytes);
  const baseline = {...report(), investigation, corpus: {transitions: 1000, breaks: 32}};
@@ -35,7 +35,7 @@ test("state-change measurement reproduces #108 and rejects extra or unexplained 
   (r: any) => {r.investigation.stateChanges[0].kind = "unknown-reset";},
   (r: any) => {r.investigation.stateChanges[0].prefixBreak = true;},
   (r: any) => {r.investigation.occupancy[1].breaks = 1;},
-  (r: any) => {r.investigation.occupancy[1].appendedCounters = 1;},
+  (r: any) => {r.investigation.occupancy[1].changedRequests = 1;},
   (r: any) => {r.corpus.breaks++;},
  ]) {
   const candidate = structuredClone(baseline); mutate(candidate);
@@ -49,6 +49,24 @@ test("approved display removal must be exact and confined to a goal counter bloc
  assert.equal(compareReports(baseline, candidate).approvedDifferences.length, 1);
  candidate.rows[0] = {id: "counter", ...summarize({messages: [{role: "user", content: "Goal snapshot: 12 tokens\nAutonomous runs: 1/3 extra instruction"}]})};
  assert.throws(() => compareReports(baseline, candidate), /unexpected counter edit/);
+});
+
+test("the pointer delta must reproduce the release usage segment and context line", () => {
+ const wrap = (text: string) => ({version: 1, rows: [{id: "pointer", ...summarize({messages: [{role: "user", content: text}]})}]});
+ const baseline = wrap("Goal snapshot: 75000 tokens\nContext snapshot: unavailable\n");
+ const pointer = "Now: Ship it\nDone when: suite green\nProgress: 2/5";
+ // Hidden context (the approved default) and explicit context both pass.
+ assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}`)).approvedDifferences.length, 1);
+ assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}\nContext snapshot: unavailable`)).approvedDifferences.length, 1);
+ for (const text of [
+  "[PI GOAL NOW goalId=g taskId=t2]\nNow: Ship it\nContext snapshot: unavailable", // usage segment lost
+  "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nShip it\nContext snapshot: unavailable", // no next-step statement
+  `[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}\nContext snapshot: 12 tokens`, // context line rewritten
+  `[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}\nContext snapshot: unavailable\nContext snapshot: unavailable`, // duplicated
+ ]) assert.throws(() => compareReports(baseline, wrap(text)), /unexpected counter edit|unexplained block/);
+ const extraKey = wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}`) as any;
+ extraKey.rows[0].blocks[0].raw.role = "system";
+ assert.throws(() => compareReports(baseline, extraKey), /unexpected counter edit|unexplained block/);
 });
 
 test("cache gate rejects serialized early-content changes and removed or relocated markers", () => {

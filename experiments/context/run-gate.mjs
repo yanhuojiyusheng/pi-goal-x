@@ -82,8 +82,8 @@ for (const fixtureId of expectedFixtureIds) {
 	const liveState = captured.messages.filter(m => m.customType === "pi-goal-live-context");
 	const active = liveState[0]?.content?.includes("[PI GOAL ACTIVE goalId=");
 	const expectedTails = active ? 2 : 1;
-	if (liveState.length && (liveState.length !== expectedTails || liveState.some((m, i) => captured.messages.at(-expectedTails + i) !== m))) failures.push(`${fixtureId}: current policy and optional counters must occur once at the tail`);
-	if (active && !liveState[1]?.content?.startsWith("Goal snapshot:")) failures.push(`${fixtureId}: counters snapshot missing`);
+	if (liveState.length && (liveState.length !== expectedTails || liveState.some((m, i) => captured.messages.at(-expectedTails + i) !== m))) failures.push(`${fixtureId}: current policy and optional pointer must occur once at the tail`);
+	if (active && !liveState[1]?.content?.startsWith("[PI GOAL NOW ")) failures.push(`${fixtureId}: next-step pointer missing`);
 	const liveText = liveState[0]?.content ?? "";
 
 	// Required single-source markers on active-goal fixtures whose turn was

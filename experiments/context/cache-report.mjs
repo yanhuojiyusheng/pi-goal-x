@@ -65,25 +65,33 @@ export async function buildReport() {
     }});
    }
   }
-  // Long deterministic corpus: current bounds and reset counts, including image content.
+  // Long deterministic corpus: retained-block bounds and reset counts, including
+  // image content. Both fields are passed so one driver measures either retention
+  // model: the archived release accumulates `counters`, this tree replaces
+  // `pointer`.
   const retention=new LiveTailRetention();
   const history=[userMessage('bounded history'),{role:'user',timestamp:1,content:[{type:'text',text:'tool output '.repeat(4096)},{type:'image',mimeType:'image/png',data:'a'.repeat(16384)}]}];
-  let last, breaks=0;
+  let last, breaks=0, maxRetainedMessages=0, maxRetainedBytes=0;
   for(let n=0;n<1000;n++) {
-   const fresh={state:'unchanging policy',counters:`Goal snapshot: ${n}`};
+   const fresh={state:'unchanging policy',counters:`Goal snapshot: ${n}`,pointer:`[PI GOAL NOW goalId=bounded]\nNow: step ${n}`};
    const result=retention.apply('bounded',history,fresh);
    if(last && JSON.stringify(result.messages.slice(0,last.length))!==JSON.stringify(last)) breaks++;
    assert.ok(result.transientContents.length<=32,'tail bound exceeded');
    assert.ok(result.transientContents.slice(1).reduce((s,t)=>s+Buffer.byteLength(t),0)<=4096,'counter byte bound exceeded');
+   maxRetainedMessages=Math.max(maxRetainedMessages,result.transientContents.length);
+   maxRetainedBytes=Math.max(maxRetainedBytes,result.transientContents.reduce((s,t)=>s+Buffer.byteLength(t),0));
    assert.deepEqual(retention.apply('bounded',history,fresh),result,'retry changed at capacity');
    last=result.messages;
+   // History must keep advancing, or retained blocks stay at a fixed anchor and
+   // the corpus measures nothing.
+   history.push(userMessage(`turn ${n}`));
   }
-  assert.ok(breaks>2 && breaks<40,'unexpected reset frequency');
+  assert.ok(breaks>0,'advancing history must move at least one retained block');
   let source='archived-release';
   try {source=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();} catch { /* Gate assigns the pinned archive SHA. */ }
   const lockfile=readFileSync(path.join(root,'package-lock.json'));
   const locked=JSON.parse(lockfile);delete locked.version;delete locked.packages[''].version;
-  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,breaks},investigation:investigateCache(),rows,samples};
+  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,breaks,maxRetainedMessages,maxRetainedBytes},investigation:investigateCache(),rows,samples};
  } finally {rmSync(work,{recursive:true,force:true});}
 }
 
