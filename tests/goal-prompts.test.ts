@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createGoal, type GoalTaskList } from "../extensions/goal-record.ts";
+import { createGoal, type GoalTask, type GoalTaskList } from "../extensions/goal-record.ts";
 import {
 	CHECKPOINT_TRIGGER_MAX_CHARS,
 	checkpointTriggerPrompt,
 	promptProfile,
 	continuationPrompt,
 	goalPrompt,
+	goalPromptParts,
 	objectiveEditedPrompt,
 	staleContinuationPrompt,
 	taskListBlock,
@@ -481,4 +482,56 @@ test("the closing block points at the current task, with usage as its clock", ()
 	const noTasks = { ...goal, taskList: undefined, currentTaskId: undefined };
 	assert.match(goalPrompt(noTasks), /keep advancing the objective above/);
 	assert.match(goalPrompt(goal, { disableTasks: true }), /keep advancing the objective above/);
+});
+
+test("the closing block points at the open step inside a phased task, not at the phase", () => {
+	const phased = (status: { p1?: string; p11?: string; p12?: string } = {}): GoalTaskList => ({
+		blockCompletion: false,
+		tasks: [
+			{
+				id: "p1", title: "Stage one", status: (status.p1 ?? "pending") as GoalTask["status"],
+				verificationContract: "Stage one ships an importable package",
+				subtasks: [
+					{ id: "p1.1", title: "Create the directories", status: (status.p11 ?? "pending") as GoalTask["status"], verificationContract: "Only src/ is created" },
+					{ id: "p1.2", title: "Write the CLI entry", status: (status.p12 ?? "pending") as GoalTask["status"] },
+				],
+			},
+			{ id: "p2", title: "Stage two", status: "pending", subtasks: [{ id: "p2.1", title: "Create the schema", status: "pending" }] },
+		],
+	} as GoalTaskList);
+	const goal = createGoal({ objective: "Port the service", autoContinue: true, sisyphus: false });
+	goal.taskList = phased();
+	// Focusing the phase must not point the model at the phase: the open step is its first child.
+	goal.currentTaskId = "p1";
+	const phaseFocused = goalPromptParts(goal).pointer;
+	assert.match(phaseFocused, /\[PI GOAL NOW goalId=\S+ taskId=p1\.1\]/);
+	assert.match(phaseFocused, /Now: Create the directories/);
+	assert.match(phaseFocused, /Phase: Stage one · 0\/2/);
+	assert.match(phaseFocused, /Done when: Only src\/ is created/, "the innermost contract wins over the phase's");
+	assert.match(phaseFocused, /Then: p1\.2 · Write the CLI entry/, "the next step is the sibling, not the phase's own child again");
+	// Focusing the child directly reads the same, so inheritance and focus agree.
+	assert.equal(goalPromptParts({ ...goal, currentTaskId: "p1.1" }).pointer, phaseFocused);
+	assert.match(goalPromptParts(goal).state, /Stage one ships an importable package/, "the phase contract stays in the policy block");
+
+	// Every child done but the phase open: the phase itself is the step, and no Phase line appears.
+	goal.taskList = phased({ p11: "complete", p12: "complete" });
+	const phaseDone = goalPromptParts(goal).pointer;
+	assert.match(phaseDone, /taskId=p1\]/);
+	assert.match(phaseDone, /Now: Stage one/);
+	assert.doesNotMatch(phaseDone, /Phase:/);
+	assert.match(phaseDone, /Then: p2 · Stage two/);
+
+	// Without a focused task the suggestion descends too.
+	goal.taskList = phased();
+	assert.match(goalPromptParts({ ...goal, currentTaskId: undefined }).pointer, /Start with the first pending task: p1\.1 · Create the directories/);
+
+	// Lightweight children are notes on their parent, so the parent stays the unit and no Phase line appears.
+	const lightweight = createGoal({ objective: "Write the docs", autoContinue: true, sisyphus: false });
+	lightweight.taskList = { blockCompletion: false, tasks: [{
+		id: "docs", title: "Write the docs", status: "pending", lightweightSubtasks: true,
+		subtasks: [{ id: "docs.1", title: "README", status: "pending" }],
+	}] } as GoalTaskList;
+	lightweight.currentTaskId = "docs";
+	assert.match(goalPromptParts(lightweight).pointer, /taskId=docs\]/);
+	assert.match(goalPromptParts(lightweight).pointer, /Now: Write the docs/);
 });

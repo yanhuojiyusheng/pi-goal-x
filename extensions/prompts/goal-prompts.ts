@@ -248,6 +248,11 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, conte
  * step after it. It replaced the usage snapshot, which sat at the end of the
  * request — the position the model reads last — and carried only token counts.
  *
+ * "Now" is the deepest open step, not the task the focus names: a phased plan
+ * marks the phase current, and the unit the model can actually work on is that
+ * phase's first open child. Lightweight children are notes on their parent, so
+ * they never become the unit themselves.
+ *
  * The header carries the goal's cumulative usage. That looks like decoration and
  * is not: spending moves it, which makes the block differ on nearly every
  * request, so retention drops the previous copy and appends a fresh one at the
@@ -256,24 +261,54 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, conte
  * request counter (`MAX_STATE_REANCHOR_REQUESTS`); this block is replaced every
  * request, so it needs no window of its own.
  */
+/** The open step a focused task stands for: its first open child, recursively. */
+function actionableTask(task: GoalTask): GoalTask {
+	if (task.lightweightSubtasks) return task;
+	let current = task;
+	for (;;) {
+		const child = current.subtasks?.find(child => child.status === "pending");
+		if (!child || child.lightweightSubtasks) return child ?? current;
+		current = child;
+	}
+}
+
+function taskPath(tasks: readonly GoalTask[], id: string): GoalTask[] | undefined {
+	for (const task of tasks) {
+		if (task.id === id) return [task];
+		const found = task.subtasks && taskPath(task.subtasks, id);
+		if (found) return [task, ...found];
+	}
+	return undefined;
+}
+
+function childProgress(parent: GoalTask): string {
+	const children = parent.subtasks ?? [];
+	return `${children.filter(child => child.status === "complete").length}/${children.length}`;
+}
+
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
 	const usage = formatUsage(goal);
 	const header = (taskId?: string): string =>
 		`[PI GOAL NOW goalId=${goal.id}${taskId ? ` taskId=${taskId}` : ""}${usage ? ` ${usage}` : ""}]`;
 	const lines: string[] = [];
 	const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
-	const current = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
+	const focused = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
+	const current = focused && actionableTask(focused);
 	if (index) lines.push(header(current ? excerpt(current.id, 80, "tasks") : undefined));
 	if (index && current) {
 		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
 		const next = after.find(row => row.task.status === "pending")?.task;
 		lines.push(`Now: ${excerpt(current.title, 180, "tasks")}`);
-		const contract = (current.verificationContract ?? goal.verificationContract)?.trim();
+		const path = taskPath(goal.taskList!.tasks, current.id) ?? [current];
+		const parent = path[path.length - 2];
+		if (parent) lines.push(`Phase: ${excerpt(parent.title, 120, "tasks")} · ${childProgress(parent)}`);
+		const contract = ([...path].reverse().find(task => task.verificationContract?.trim())?.verificationContract ?? goal.verificationContract)?.trim();
 		if (contract && !settings?.disableContracts) lines.push(`Done when: ${excerpt(contract, 600, "tasks")}`);
 		lines.push(next ? `Then: ${excerpt(next.id, 80, "tasks")} · ${excerpt(next.title, 180, "tasks")}` : "Then: none — this is the last pending task");
 		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
 	} else if (index) {
-		const next = index.pending[0];
+		const first = index.pending[0];
+		const next = first && actionableTask(first);
 		lines.push("Now: no task is marked current.");
 		if (next) {
 			const taskId = excerpt(next.id, 80, "tasks");
