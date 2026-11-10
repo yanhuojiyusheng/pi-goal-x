@@ -275,11 +275,13 @@ function taskPath(tasks: readonly GoalTask[], id: string): GoalTask[] | undefine
  *
  * The header carries the goal's cumulative usage. That looks like decoration and
  * is not: spending moves it, which makes the block differ on nearly every
- * request, so retention drops the previous copy and appends a fresh one at the
- * tail. The pointer therefore never drifts behind the newest turn. The policy
- * block is what needs a window, and retention re-anchors that one on its own
- * request counter (`MAX_STATE_REANCHOR_REQUESTS`); this block is replaced every
- * request, so it needs no window of its own.
+ * request once it has spent something, so retention drops the previous copy and
+ * appends a fresh one at the tail. Before the first token or second is spent the
+ * header is stable and the block stays byte-identical. The pointer therefore
+ * never drifts behind the newest turn. The policy block is what needs a window,
+ * and retention re-anchors that one on its own request counter
+ * (`MAX_STATE_REANCHOR_REQUESTS`); this block is replaced every request, so it
+ * needs no window of its own.
  */
 
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
@@ -290,24 +292,29 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 	const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
 	const focused = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
 	const current = focused && actionableTask(focused);
-	if (index) lines.push(header(current ? excerpt(current.id, 80, "tasks") : undefined));
+	if (index) lines.push(header(current?.id));
 	if (index && current) {
-		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
-		const next = after.find(row => row.task.status === "pending")?.task;
-		lines.push(`Now: ${excerpt(current.id, 80, "tasks")} · ${excerpt(current.title, 180, "tasks")}`);
 		const path = taskPath(goal.taskList!.tasks, current.id) ?? [current];
+		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
+		// "None" must mean no pending task anywhere: a later sibling can be complete
+		// while an earlier pending step is still open, and the current task can itself
+		// still be pending, so both are excluded rather than assuming document order.
+		const pathIds = new Set(path.map(task => task.id));
+		const next = after.find(row => row.task.status === "pending")?.task ?? index.pending.find(task => !pathIds.has(task.id));
+		lines.push(`Now: ${current.id} · ${excerpt(current.title, 180, "tasks")}`);
 		const contract = ([...path].reverse().find(task => task.verificationContract?.trim())?.verificationContract ?? goal.verificationContract)?.trim();
 		if (contract && !settings?.disableContracts) lines.push(`Done when: ${excerpt(contract, 600, "tasks")}`);
-		lines.push(next ? `Then: ${excerpt(next.id, 80, "tasks")} · ${excerpt(next.title, 180, "tasks")}` : "Then: none — this is the last pending task");
+		lines.push(next ? `Then: ${next.id} · ${excerpt(next.title, 180, "tasks")}` : "Then: none — this is the last pending task");
 		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
 	} else if (index) {
 		const first = index.pending[0];
 		const next = first && actionableTask(first);
 		lines.push("Now: no task is marked current.");
 		if (next) {
-			const taskId = excerpt(next.id, 80, "tasks");
-			lines.push(`Start with the first pending task: ${taskId} · ${excerpt(next.title, 180, "tasks")}`);
-			lines.push(`Mark it current with update_goal_task({task_id:"${taskId}", status:"start"}).`);
+			// Ids are never excerpted: a truncated id cannot be passed back to
+			// update_goal_task, and the pointer's example must be copy-pasteable.
+			lines.push(`Start with the first pending task: ${next.id} · ${excerpt(next.title, 180, "tasks")}`);
+			lines.push(`Mark it current with update_goal_task({task_id:"${next.id}", status:"start"}).`);
 		}
 		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
 	} else {

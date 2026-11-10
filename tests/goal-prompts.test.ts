@@ -474,7 +474,8 @@ test("the closing block points at the current task, with usage as its clock", ()
 	assert.doesNotMatch(prompt.slice(0, prompt.indexOf("[PI GOAL NOW")), /987654/, "usage never enters the stable policy block");
 
 	goal.currentTaskId = "task-3";
-	assert.match(goalPrompt(goal), /Then: none — this is the last pending task/);
+	// task-2 is still pending even though it precedes task-3, so nothing is "none" yet.
+	assert.match(goalPrompt(goal), /Then: task-2 · Write the exporter/);
 
 	goal.currentTaskId = undefined;
 	assert.match(goalPrompt(goal), /Start with the first pending task: task-2 · Write the exporter/);
@@ -482,6 +483,61 @@ test("the closing block points at the current task, with usage as its clock", ()
 	const noTasks = { ...goal, taskList: undefined, currentTaskId: undefined };
 	assert.match(goalPrompt(noTasks), /keep advancing the objective above/);
 	assert.match(goalPrompt(goal, { disableTasks: true }), /keep advancing the objective above/);
+});
+
+test("the closing block still names an earlier pending task instead of claiming none remain", () => {
+	const current = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
+	current.taskList = {
+		blockCompletion: false,
+		tasks: [
+			{ id: "task-1", title: "Investigate the failure", status: "pending" },
+			{ id: "task-2", title: "Ship the fix", status: "in_progress" },
+			{ id: "task-3", title: "Write the report", status: "complete" },
+		],
+	} as GoalTaskList;
+	current.currentTaskId = "task-2";
+	const pointer = goalPromptParts(current).pointer;
+	assert.match(pointer, /Then: task-1 · Investigate the failure/, "a pending task before the current one is still pending work");
+	assert.doesNotMatch(pointer, /Then: none/, "document order does not decide that nothing remains");
+
+	// The current task may itself still be pending; it must never be named as its own successor.
+	current.taskList = {
+		blockCompletion: false,
+		tasks: [
+			{ id: "task-1", title: "Investigate the failure", status: "pending" },
+			{ id: "task-2", title: "Ship the fix", status: "pending" },
+		],
+	} as GoalTaskList;
+	current.currentTaskId = "task-2";
+	assert.match(goalPromptParts(current).pointer, /Then: task-1 · Investigate the failure/);
+
+	// A lone open task still reads as the last pending task.
+	current.taskList = { blockCompletion: false, tasks: [{ id: "task-2", title: "Ship the fix", status: "in_progress" }] } as GoalTaskList;
+	assert.match(goalPromptParts(current).pointer, /Then: none — this is the last pending task/);
+});
+
+test("the pointer never truncates task ids, only titles and contracts", () => {
+	const longId = `task-${"x".repeat(120)}`;
+	const longTitle = `T${"y".repeat(400)}`;
+	const goal = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
+	goal.taskList = {
+		blockCompletion: false,
+		tasks: [
+			{ id: longId, title: longTitle, status: "pending", verificationContract: `C${"z".repeat(900)}` },
+			{ id: "task-2", title: "Follow up", status: "pending" },
+		],
+	} as GoalTaskList;
+	goal.currentTaskId = longId;
+	const pointer = goalPromptParts(goal).pointer;
+	assert.ok(pointer.includes(`taskId=${longId}]`) || pointer.includes(`taskId=${longId} `), "the header carries the full id");
+	assert.ok(pointer.includes(`Now: ${longId} · `), "Now carries the full id");
+	assert.ok(pointer.includes("Then: task-2 · Follow up"), "the successor appears in full too");
+	assert.ok(pointer.split("\n").some(line => line.startsWith(`Now: ${longId} · `)), "the id is not excerpted");
+	assert.match(pointer, /\[more: get_goal\(section="tasks"\)\]/, "the title and contract stay bounded");
+
+	// Without a focused task the copy-pasteable example must carry the whole id as well.
+	goal.currentTaskId = undefined;
+	assert.ok(goalPromptParts(goal).pointer.includes(`update_goal_task({task_id:"${longId}", status:"start"})`), "a truncated id cannot be passed back");
 });
 
 test("the closing block points at the open step inside a phased task, not at the phase", () => {
