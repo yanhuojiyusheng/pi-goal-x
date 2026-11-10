@@ -39,11 +39,12 @@ const hideContextLine = value => typeof value==='string' && value.startsWith('Go
 
 /**
  * Verified delta #2 (this tree): the release `Goal snapshot:` counter block is
- * replaced by the next-step pointer block. Approved field by field, never by
- * relaxing the string comparison: the block must still be one user/input text
- * block in the same position, the release usage segment must survive in the
- * pointer header, and a release context line must be reproduced verbatim as the
- * pointer's final line. Anything else stays an unexplained edit.
+ * replaced by the next-step pointer block. The comparison is never relaxed: the
+ * block must still be one user/input text block in the same position, the release
+ * usage segment must survive in the pointer header, the pointer body must match
+ * exactly one of the grammar shapes below line for line, and a release context
+ * line must be reproduced verbatim as the pointer's final line. Anything else
+ * stays an unexplained edit.
  */
 const replaceWithPointer = value => {
  if(typeof value!=='string' || !value.startsWith('Goal snapshot:')) return undefined;
@@ -56,18 +57,50 @@ const replaceWithPointer = value => {
 };
 
 /**
- * The pointer's own grammar: a bracketed `[PI GOAL NOW …]` header, a first body
- * line that states the next step, and no release-only line left behind. A
- * release `Context snapshot:` line may be dropped (delta #1) or reproduced
- * verbatim as the last line, never rewritten.
+ * The pointer's own grammar. Exactly one shape is accepted, line for line:
+ *   - current task: `Now: …`, optional `Done when: …`, `Then: …`, `Progress: n/m`
+ *   - pending task, none current: `Now: no task is marked current.`,
+ *     `Start with the first pending task: …`,
+ *     `Mark it current with update_goal_task({task_id:"…", status:"start"}).`,
+ *     `Progress: n/m`
+ *   - no task list: `Now: keep advancing the objective above.`,
+ *     `When it is actually met, call update_goal({status:"complete"}) …`
+ * A missing, reordered or extra body line is not approved; release-only
+ * `Goal snapshot:`/`Autonomous runs:` lines must never survive, and a release
+ * `Context snapshot:` line may be dropped (delta #1) or reproduced verbatim as
+ * the last line, never rewritten.
  */
 const RELEASE_ONLY_LINE = /^(Goal snapshot|Autonomous runs):/;
+const NOW_LINE = /^Now: \S/;
+const DONE_WHEN_LINE = /^Done when: \S/;
+const THEN_LINE = /^Then: \S/;
+const PROGRESS_LINE = /^Progress: \d+\/\d+$/;
+const NO_CURRENT_LINE = "Now: no task is marked current.";
+const START_PENDING_LINE = /^Start with the first pending task: \S/;
+const MARK_CURRENT_LINE = /^Mark it current with update_goal_task\(\{task_id:"[^"]+", status:"start"\}\)\.$/;
+const NO_TASK_LINE = "Now: keep advancing the objective above.";
+const WHEN_MET_LINE = 'When it is actually met, call update_goal({status:"complete"}) to request an independent audit.';
+
+function pointerLinesOk(body) {
+ const first=body[0];
+ if(first===NO_CURRENT_LINE)
+  return body.length===4&&START_PENDING_LINE.test(body[1])&&MARK_CURRENT_LINE.test(body[2])&&PROGRESS_LINE.test(body[3]);
+ if(first===NO_TASK_LINE) return body.length===2&&body[1]===WHEN_MET_LINE;
+ if(!NOW_LINE.test(first)) return false;
+ const rest=body.slice(1);
+ const hasDone=rest.length===3;
+ if(hasDone&&!DONE_WHEN_LINE.test(rest[0])) return false;
+ if(rest.length!==2&&!hasDone) return false;
+ return THEN_LINE.test(rest[hasDone?1:0])&&PROGRESS_LINE.test(rest[hasDone?2:1]);
+}
+
 function pointerBodyOk(text,releaseContext) {
  const lines=text.split('\n');
  const contextLines=lines.filter(line=>line.startsWith('Context snapshot:'));
  const body=lines.slice(1).filter(line=>!line.startsWith('Context snapshot:'));
- if(body.length===0||!body[0]?.startsWith('Now: ')||body[0].length<='Now: '.length) return false;
+ if(body.length===0) return false;
  if(body.some(line=>RELEASE_ONLY_LINE.test(line))) return false;
+ if(!pointerLinesOk(body)) return false;
  if(contextLines.length>1) return false;
  if(contextLines.length===1) {
   if(releaseContext===undefined) return false;
@@ -118,9 +151,11 @@ export function compareReports(baseline, candidate) {
  assert.deepEqual(candidate.rows.map(r=>r.id),baseline.rows.map(r=>r.id),'missing/reordered scenario');
  if(baseline.corpus) {
   assert.equal(candidate.corpus.transitions,baseline.corpus.transitions,'retention corpus length changed');
-  assert.ok(candidate.corpus.maxRetainedMessages<=32,'retained block count grew');
-  assert.ok(candidate.corpus.maxRetainedBytes<=4096,'retained bytes grew');
-  assert.ok(candidate.corpus.breaks>0&&candidate.corpus.breaks<candidate.corpus.transitions,'unexpected reset frequency');
+  assert.ok(candidate.corpus.maxRetainedMessages<=2,`retained block count grew to ${candidate.corpus.maxRetainedMessages}`);
+  assert.ok(candidate.corpus.maxRetainedBytes<=2048,`retained bytes grew to ${candidate.corpus.maxRetainedBytes}`);
+  assert.equal(candidate.corpus.pointerReplacements,candidate.corpus.transitions-1,'the pointer must be replaced on every fresh request');
+  assert.ok(candidate.corpus.policyAnchorMoves<=Math.ceil(candidate.corpus.transitions/24)+1,`policy re-anchored ${candidate.corpus.policyAnchorMoves} times`);
+  assert.ok(candidate.corpus.breaks>0,'advancing history must move at least one retained block');
  }
  if(baseline.dependencies) assert.equal(candidate.dependencies,baseline.dependencies,'comparison dependencies differ');
  if(baseline.investigation) {

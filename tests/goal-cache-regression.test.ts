@@ -54,15 +54,28 @@ test("approved display removal must be exact and confined to a goal counter bloc
 test("the pointer delta must reproduce the release usage segment and context line", () => {
  const wrap = (text: string) => ({version: 1, rows: [{id: "pointer", ...summarize({messages: [{role: "user", content: text}]})}]});
  const baseline = wrap("Goal snapshot: 75000 tokens\nContext snapshot: unavailable\n");
- const pointer = "Now: Ship it\nDone when: suite green\nProgress: 2/5";
+ const pointer = "Now: Ship it\nDone when: suite green\nThen: task-3 · Document it\nProgress: 2/5";
  // Hidden context (the approved default) and explicit context both pass.
  assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}`)).approvedDifferences.length, 1);
  assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}\nContext snapshot: unavailable`)).approvedDifferences.length, 1);
+ // The other two pointer shapes are approved too.
+ const noCurrent = "Now: no task is marked current.\nStart with the first pending task: t1 · Plan\nMark it current with update_goal_task({task_id:\"t1\", status:\"start\"}).\nProgress: 0/3";
+ assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g 75000 tokens]\n${noCurrent}`)).approvedDifferences.length, 1);
+ const noTasks = "Now: keep advancing the objective above.\nWhen it is actually met, call update_goal({status:\"complete\"}) to request an independent audit.";
+ assert.equal(compareReports(baseline, wrap(`[PI GOAL NOW goalId=g 75000 tokens]\n${noTasks}`)).approvedDifferences.length, 1);
  for (const text of [
   "[PI GOAL NOW goalId=g taskId=t2]\nNow: Ship it\nContext snapshot: unavailable", // usage segment lost
   "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nShip it\nContext snapshot: unavailable", // no next-step statement
   `[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}\nContext snapshot: 12 tokens`, // context line rewritten
   `[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}\nContext snapshot: unavailable\nContext snapshot: unavailable`, // duplicated
+  "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nNow: Ship it\nProgress: 2/5", // Then missing
+  "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nProgress: 2/5\nNow: Ship it\nThen: task-3 · Document it", // reordered
+  "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nNow: Ship it\nThen: task-3 · Document it\nDone when: suite green\nProgress: 2/5", // Done when after Then
+  "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nNow: Ship it\nDone when: suite green\nProgress: 2/5", // Then missing after Done when
+  "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nNow: \nThen: task-3 · Document it\nProgress: 2/5", // empty Now
+  "[PI GOAL NOW goalId=g 75000 tokens]\nNow: no task is marked current.\nProgress: 0/3", // partial pending-task shape
+  "[PI GOAL NOW goalId=g 75000 tokens]\nNow: keep advancing the objective above.", // missing completion instruction
+  "[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\nNow: Ship it\nThen: task-3 · Document it\nProgress: 2/5\nDone when: suite green", // extra trailing line
  ]) assert.throws(() => compareReports(baseline, wrap(text)), /unexpected counter edit|unexplained block/);
  const extraKey = wrap(`[PI GOAL NOW goalId=g taskId=t2 75000 tokens]\n${pointer}`) as any;
  extraKey.rows[0].blocks[0].raw.role = "system";
