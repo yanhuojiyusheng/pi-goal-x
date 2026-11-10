@@ -201,7 +201,7 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 				const text = JSON.stringify(conversation(payload));
 				assert.ok(!text.includes("Usage: 800 tokens"));
 				assert.equal(text.split("Objective: revised").length - 1, 1);
-				assert.ok(text.split("Goal snapshot:").length - 1 <= 31);
+				assert.equal(text.split("Goal snapshot:").length - 1, 1, "one pointer copy");
 				assert.deepEqual(payload.tools, first.tools, "tool schemas stay fixed through resets");
 				assert.deepEqual(conversation(payload).filter((m: any) => m.role === "system" || m.role === "developer"), a.filter((m: any) => m.role === "system" || m.role === "developer"));
 				assert.deepEqual(conversation(await capture(session, fresh)), conversation(payload), "retry at/after eviction is identical");

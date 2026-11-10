@@ -49,15 +49,22 @@ export const MAX_TRACKED_SESSIONS = 16;
  * anchor and the tail. Re-anchor it once per window of pointer changes; the
  * pointer block needs no window because it is replaced every request.
  *
+ * This is the default of the `stateReanchorRequests` setting. Zero there disables
+ * re-anchoring entirely, so the policy block keeps its first anchor for the life
+ * of the session.
+ *
  * Only requests that carry fresh content advance the window: an identical retry
  * must stay byte-identical, and a retry is exactly when a warm prefix matters
- * most.
+ * most. The request that performs the reset does not consume window budget, so a
+ * window is exactly this many fresh requests.
  */
 export const MAX_STATE_REANCHOR_REQUESTS = 24;
 
 export interface FreshLiveTails {
 	state: string;
 	pointer?: string | undefined;
+	/** Fresh-content requests between policy re-anchors; 0 never re-anchors. */
+	window?: number | undefined;
 }
 
 interface RetainedTail {
@@ -101,7 +108,7 @@ function fingerprintMessage(message: unknown): string | null {
 function splitsToolBatch(next: unknown): boolean {
 	const record = asRecord(next);
 	const role = record?.role;
-	if (role === "toolResult" || role === "tool") return true;
+	if (role === "toolResult" || role === "tool" || role === "tool_result") return true;
 	const content = record?.content;
 	if (Array.isArray(content)) {
 		for (const block of content) {
@@ -194,13 +201,17 @@ export class LiveTailRetention {
 		let shared = 0;
 		while (shared < blocks.length && shared < previous.length && blocks[shared] === previous[shared]) shared++;
 		// The window counts fresh content, not raw applies: an identical retry
-		// must replay byte for byte, so it never advances toward a reset.
+		// must replay byte for byte, so it never advances toward a reset. The
+		// request that performs the reset does not consume window budget, so a
+		// window is exactly `window` fresh requests. Zero never re-anchors.
 		if (shared < blocks.length) {
-			if (session.tails.length > 0 && session.applies + 1 >= MAX_STATE_REANCHOR_REQUESTS) {
+			const window = fresh.window ?? MAX_STATE_REANCHOR_REQUESTS;
+			if (window > 0 && session.tails.length > 0 && session.applies + 1 >= window) {
 				reset();
 				shared = 0;
+			} else {
+				session.applies += 1;
 			}
-			session.applies += 1;
 		}
 		// The pointer is replaced, not accumulated: drop the previous copy so only
 		// one rides at the tail. An unchanged request keeps what it already has.

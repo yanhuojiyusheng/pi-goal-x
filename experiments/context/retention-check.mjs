@@ -21,7 +21,7 @@ for (const shape of ['text', 'tool-output', 'image']) for (const bytes of [64 * 
   // Both fields ride so this gate covers every retention model: the archived
   // release accumulates `counters`, this tree replaces `pointer`.
   start=performance.now(); const result=retention.apply('fixture',base,{state:'current policy',counters:`snapshot ${step}`,pointer:`[PI GOAL NOW goalId=fixture]\nNow: step ${step}`}); const elapsed=performance.now()-start;
-  assert.ok(result.transientContents.length<=32);
+  assert.ok(result.transientContents.length<=2,`live blocks exceed one policy plus one pointer (${result.transientContents.length})`);
   assert.ok(result.transientContents.reduce((n,text)=>n+Buffer.byteLength(text),0)<=4096+14);
   retainedSizes.push(result.transientContents.length);
   retainedBytes.push(result.transientContents.reduce((n,text)=>n+Buffer.byteLength(text),0));

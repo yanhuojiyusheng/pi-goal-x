@@ -21,7 +21,7 @@ try {
  for(const name of ['capture-context.mjs','fixtures.mjs','cache-report.mjs','cache-compare.mjs']) cpSync(path.join(root,'experiments/context',name),path.join(baselineRoot,'experiments/context',name));
  symlinkSync(path.join(root,'node_modules'),path.join(baselineRoot,'node_modules'),'dir');
  const baselineFile=path.join(output,'baseline.json');
- execFileSync(process.execPath,['--experimental-strip-types','experiments/context/cache-report.mjs',`--output=${baselineFile}`],{cwd:baselineRoot,maxBuffer:1024*1024});
+ execFileSync(process.execPath,['--experimental-strip-types','experiments/context/cache-report.mjs','--retention=legacy',`--output=${baselineFile}`],{cwd:baselineRoot,maxBuffer:1024*1024});
  const baseline=JSON.parse(readFileSync(baselineFile,'utf8'));
  baseline.source=ref;
  writeFileSync(baselineFile,JSON.stringify(baseline,null,2)+'\n');

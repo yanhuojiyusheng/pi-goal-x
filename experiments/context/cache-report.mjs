@@ -15,7 +15,7 @@ import {digest, summarize, compareReports, investigateCache} from './cache-compa
 const prefix = (a, b) => { let n=0; while(n<a.length && n<b.length && a[n].hash===b[n].hash) n++; return n; };
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
-export async function buildReport() {
+export async function buildReport({blockBound=2}={}) {
  const work=mkdtempSync(path.join(tmpdir(),'goal-cache-report-'));
  const rows=[];
  const samples=[];
@@ -71,13 +71,22 @@ export async function buildReport() {
   // `pointer`.
   const retention=new LiveTailRetention();
   const history=[userMessage('bounded history'),{role:'user',timestamp:1,content:[{type:'text',text:'tool output '.repeat(4096)},{type:'image',mimeType:'image/png',data:'a'.repeat(16384)}]}];
-  let last, breaks=0, maxRetainedMessages=0, maxRetainedBytes=0;
+  let last, previousLive=[], breaks=0, pointerReplacements=0, policyAnchorMoves=0, maxRetainedMessages=0, maxRetainedBytes=0;
   for(let n=0;n<1000;n++) {
    const fresh={state:'unchanging policy',counters:`Goal snapshot: ${n}`,pointer:`[PI GOAL NOW goalId=bounded]\nNow: step ${n}`};
    const result=retention.apply('bounded',history,fresh);
    if(last && JSON.stringify(result.messages.slice(0,last.length))!==JSON.stringify(last)) breaks++;
-   assert.ok(result.transientContents.length<=32,'tail bound exceeded');
-   assert.ok(result.transientContents.slice(1).reduce((s,t)=>s+Buffer.byteLength(t),0)<=4096,'counter byte bound exceeded');
+   // Two separate signals: a pointer swap replaces the previous tail text, a policy
+   // move changes where the first live block sits. Counting them apart keeps "the
+   // pointer is replaced every request" from hiding "the policy was re-anchored".
+   const live=result.messages.flatMap((message,index)=>message.role==='custom'?[{text:String(message.content),index}]:[]);
+   if(previousLive.length>0 && live.length>0) {
+    if(!live.some(block=>block.text===previousLive.at(-1).text)) pointerReplacements++;
+    if(live[0].index!==previousLive[0].index) policyAnchorMoves++;
+   }
+   previousLive=live;
+   assert.ok(result.transientContents.length<=blockBound,`retained block bound exceeded (${blockBound})`);
+   assert.ok(result.transientContents.slice(1).reduce((s,t)=>s+Buffer.byteLength(t),0)<=4096,'pointer byte bound exceeded');
    maxRetainedMessages=Math.max(maxRetainedMessages,result.transientContents.length);
    maxRetainedBytes=Math.max(maxRetainedBytes,result.transientContents.reduce((s,t)=>s+Buffer.byteLength(t),0));
    assert.deepEqual(retention.apply('bounded',history,fresh),result,'retry changed at capacity');
@@ -86,17 +95,19 @@ export async function buildReport() {
    // the corpus measures nothing.
    history.push(userMessage(`turn ${n}`));
   }
-  assert.ok(breaks>0,'advancing history must move at least one retained block');
+  assert.ok(policyAnchorMoves>0,'advancing history must move the anchored policy block');
   let source='archived-release';
   try {source=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();} catch { /* Gate assigns the pinned archive SHA. */ }
   const lockfile=readFileSync(path.join(root,'package-lock.json'));
   const locked=JSON.parse(lockfile);delete locked.version;delete locked.packages[''].version;
-  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,breaks,maxRetainedMessages,maxRetainedBytes},investigation:investigateCache(),rows,samples};
+  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,breaks,pointerReplacements,policyAnchorMoves,maxRetainedMessages,maxRetainedBytes},investigation:investigateCache(),rows,samples};
  } finally {rmSync(work,{recursive:true,force:true});}
 }
 
 if(process.argv[1]===fileURLToPath(import.meta.url)) {
- const candidate=await buildReport();
+ // The archived release accumulates counter tails and legitimately retains up to
+ // 32 blocks; this tree keeps exactly two. The caller names the model it runs.
+ const candidate=await buildReport({blockBound:process.argv.includes('--retention=legacy')?32:2});
  const baselinePath=process.argv.find(a=>a.startsWith('--baseline='))?.slice(11);
  const output=process.argv.find(a=>a.startsWith('--output='))?.slice(9);
  if(output) writeFileSync(output,JSON.stringify(candidate,null,2)+'\n');
