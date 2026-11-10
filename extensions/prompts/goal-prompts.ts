@@ -263,14 +263,13 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 	const current = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
 	if (index) lines.push(header(current ? excerpt(current.id, 80, "tasks") : undefined));
 	if (index && current) {
-		const taskId = excerpt(current.id, 80, "tasks");
 		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
 		const next = after.find(row => row.task.status === "pending")?.task;
-		lines.push(`现在做：${taskId} · ${excerpt(current.title, 180, "tasks")}`);
+		lines.push(`现在做：${excerpt(current.title, 180, "tasks")}`);
 		const contract = (current.verificationContract ?? goal.verificationContract)?.trim();
 		if (contract && !settings?.disableContracts) lines.push(`验收：${excerpt(contract, 600, "tasks")}`);
 		lines.push(next ? `之后：${excerpt(next.id, 80, "tasks")} · ${excerpt(next.title, 180, "tasks")}` : "之后：无（这是最后一个待办）");
-		lines.push(`进度：${index.complete}/${index.ordered.length} 完成${index.pending.length > 0 ? `，剩 ${index.pending.length} 个` : ""}`);
+		lines.push(`进度：${index.complete}/${index.ordered.length}`);
 	} else if (index) {
 		const next = index.pending[0];
 		lines.push("下一步：还没有标记当前任务。");
@@ -279,7 +278,7 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 			lines.push(`从第一个待办开始：${taskId} · ${excerpt(next.title, 180, "tasks")}`);
 			lines.push(`用 update_goal_task({task_id:"${taskId}", status:"start"}) 标记开始。`);
 		}
-		lines.push(`进度：${index.complete}/${index.ordered.length} 完成`);
+		lines.push(`进度：${index.complete}/${index.ordered.length}`);
 	} else {
 		lines.push(header());
 		lines.push("下一步：按上方目标继续推进；完成后用 update_goal({status:\"complete\"}) 申请独立审计。");

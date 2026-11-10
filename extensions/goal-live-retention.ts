@@ -2,30 +2,26 @@ import { createHash } from "node:crypto";
 import { asRecord } from "./goal-record.ts";
 
 /**
- * Prefix-stable retention for request-only goal-state tails.
+ * Request-only goal state, injected per provider request and never persisted.
  *
- * The context hook appends live goal state to every provider request without
- * persisting it. When the next request arrives, the completed assistant turn
- * occupies the position where the previous tail sat, so request N is no
- * longer a prefix of request N+1 and implicit prompt caches (OpenAI Responses
- * / Chat Completions, which carry no explicit marker) freeze at the first
- * injection point.
+ * Two blocks ride along: the policy block (objective, rules, task tree) and the
+ * pointer block (current task, its contract, the next one). They have opposite
+ * needs. The policy block is large and stable, so it is retained verbatim at the
+ * anchor where it was placed — replaying it costs nothing and keeps the prefix
+ * literal. The pointer block is small and must sit where the model reads last,
+ * so it is replaced rather than accumulated: each request drops the previous
+ * copy and appends the current one at the tail.
  *
- * This module makes each request a true prefix of the next: previously sent
- * tails are re-inserted verbatim at their recorded anchor (the session length
- * when they were emitted), the whole preceding history is verified unchanged
- * by digest, and only genuinely new tail content is appended. Identical
- * content across repeated requests appends nothing, so tool loops and idle
- * re-requests cost zero growth. A stable-state change, any history rewrite
- * (compaction, resume, session-tree moves, filter changes, middle-message
- * edits), an unsafe insertion point, or overflow all perform one documented
- * full reset instead of silently shifting the prefix or corrupting message
- * structure.
+ * Every request verifies the preceding history by digest and re-inserts retained
+ * blocks at their anchors. A policy change, a history rewrite (compaction,
+ * resume, session-tree moves, filter changes, middle-message edits), an unsafe
+ * insertion point, or an exhausted window all perform one documented full reset
+ * instead of silently shifting the prefix or corrupting message structure.
  */
 
 export const LIVE_CONTEXT_TYPE = "pi-goal-live-context";
 
-export type LiveTailKind = "goal-state" | "goal-counters";
+export type LiveTailKind = "goal-state" | "goal-pointer";
 
 /** A request-only tail message. Never persisted; the hook replays it per request. */
 export interface LiveMessage {
@@ -36,18 +32,16 @@ export interface LiveMessage {
 	timestamp: 0;
 }
 
-/**
- * Upper bound on retained tails per session. Retained tails are small (the
- * per-turn volatile counters), so the steady-state wire overhead stays near
- * a few kilobytes; exceeding the bound performs a single full reset, i.e. at
- * most one prefix break per MAX_RETAINED_LIVE_TAILS state changes.
- */
-export const MAX_RETAINED_LIVE_TAILS = 32;
-
 /** Upper bound on concurrently tracked sessions (parent plus isolated runs). */
 export const MAX_TRACKED_SESSIONS = 16;
-/** Extra historical observations, excluding the single current policy block. */
-export const MAX_RETAINED_COUNTER_BYTES = 4096;
+
+/**
+ * The retained policy block falls further behind the newest turn as history
+ * grows, and moving it later costs a cache break from wherever it sits. Re-anchor
+ * it once per window of requests; the pointer block needs no window because it
+ * is replaced every request.
+ */
+export const MAX_STATE_REANCHOR_REQUESTS = 12;
 
 export interface FreshLiveTails {
 	state: string;
@@ -66,6 +60,8 @@ interface SessionRetention {
 	lastFresh: FreshLiveTails | undefined;
 	/** Digest of every base message at the last apply; any earlier rewrite resets. */
 	baseFingerprints: Array<string | null>;
+	/** Requests served since the retained blocks were last anchored. */
+	applies: number;
 }
 
 function freshBlocks(fresh: FreshLiveTails): string[] {
@@ -130,7 +126,7 @@ export class LiveTailRetention {
 		const fingerprints = base.map(fingerprintMessage);
 		let session = this.sessions.get(sessionKey);
 		if (!session) {
-			session = { tails: [], lastFresh: undefined, baseFingerprints: [] };
+			session = { tails: [], lastFresh: undefined, baseFingerprints: [], applies: 0 };
 			if (this.sessions.size >= MAX_TRACKED_SESSIONS) {
 				const oldest = this.sessions.keys().next();
 				if (!oldest.done) this.sessions.delete(oldest.value);
@@ -141,7 +137,10 @@ export class LiveTailRetention {
 			session!.tails = [];
 			session!.lastFresh = undefined;
 			session!.baseFingerprints = [];
+			session!.applies = 0;
 		};
+		session.applies += 1;
+		if (session.applies >= MAX_STATE_REANCHOR_REQUESTS && session.tails.length > 0) reset();
 		// A changed state block supersedes every previously sent tail: start
 		// fresh rather than leave a stale objective or a cancelled scheduling
 		// instruction lingering mid-history.
@@ -184,14 +183,9 @@ export class LiveTailRetention {
 		const previous = session.lastFresh === undefined ? [] : freshBlocks(session.lastFresh);
 		let shared = 0;
 		while (shared < blocks.length && shared < previous.length && blocks[shared] === previous[shared]) shared++;
-		// Overflow is measured against what this request actually appends: an
-		// unchanged request adds nothing and must never trigger a reset.
-		if (session.tails.length + (blocks.length - shared) > MAX_RETAINED_LIVE_TAILS
-			|| session.tails.filter(tail => tail.kind === "goal-counters").reduce((n, tail) => n + Buffer.byteLength(tail.content), 0)
-				+ (fresh.counters === undefined || shared === blocks.length ? 0 : Buffer.byteLength(fresh.counters)) > MAX_RETAINED_COUNTER_BYTES) {
-			reset();
-			shared = 0;
-		}
+		// The pointer is replaced, not accumulated: drop the previous copy so only
+		// one rides at the tail. An unchanged request keeps what it already has.
+		if (shared < blocks.length) session.tails = session.tails.filter(tail => tail.kind === "goal-state");
 		const messages: Array<T | LiveMessage> = [...base];
 		for (let i = session.tails.length - 1; i >= 0; i--) {
 			const tail = session.tails[i]!;
@@ -199,7 +193,7 @@ export class LiveTailRetention {
 		}
 		for (let i = shared; i < blocks.length; i++) {
 			const content = blocks[i]!;
-			const kind: LiveTailKind = i === 0 ? "goal-state" : "goal-counters";
+			const kind: LiveTailKind = i === 0 ? "goal-state" : "goal-pointer";
 			messages.push(makeLiveMessage(content));
 			session.tails.push({ anchorIndex: base.length, anchorFingerprint: fingerprints.at(-1) ?? null, content, kind });
 		}

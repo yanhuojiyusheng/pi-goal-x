@@ -810,10 +810,10 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  const toolResult = {role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{type: "text", text: "file contents"}], isError: false, timestamp: 3};
  history.push(toolCall, toolResult);
  const second = await request();
- assert.deepEqual(second.slice(0, first.length), first, "the advanced request literally extends the previous one");
- assert.deepEqual(second.slice(3, 5), [toolCall, toolResult], "tool call and result stay adjacent");
+ assert.deepEqual(second.slice(0, first.length - 1), first.slice(0, -1), "history and the policy block stay literal; only the pointer moves");
+ assert.deepEqual(second.slice(2, 4), [toolCall, toolResult], "tool call and result stay adjacent");
  assert.match(second[1].content, /PI GOAL ACTIVE/);
- assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 3, "the usage header changes every request, so one fresh pointer tail is appended");
+ assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 2, "the previous pointer is replaced, never accumulated");
  assert.match(second.at(-1).content, /12345 tokens/, "usage lives in the pointer header: it is the clock that keeps the pointer at the tail");
  assert.ok(!JSON.stringify(second).includes("Autonomous runs"), "an unlimited allowance reports no runs line");
  // An objective edit changes the stable policy block: retention resets once so no

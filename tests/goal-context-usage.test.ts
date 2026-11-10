@@ -59,7 +59,7 @@ for (const mode of ["ordinary", "audit", "wait"]) test(`registered context toggl
    mutateSettingsLayer({scope: "project", cwd: h.cwd, mutation: {op: "set", path: ["showContextUsage"], value}});
    base.push({role: "assistant", content: "work", timestamp: base.length + 1});
    const next = await capture();
-   assert.deepEqual(next.slice(0, previous.length), previous);
+   assert.deepEqual(next.slice(0, previous.length - 1), previous.slice(0, -1), "only the pointer moves; history and the policy block stay literal");
    assert.equal(next.at(-1).content.includes("Context snapshot:"), value);
    assert.deepEqual(await capture(), next);
    previous = next;

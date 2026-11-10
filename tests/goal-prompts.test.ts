@@ -466,7 +466,7 @@ test("the closing block points at the current task, with usage as its clock", ()
 	goal.currentTaskId = "task-2";
 	const prompt = goalPrompt(goal);
 	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2 .*\]/);
-	assert.match(prompt, /现在做：task-2 · Write the exporter/);
+	assert.match(prompt, /现在做：Write the exporter/);
 	assert.match(prompt, /验收：Only filtered rows are exported/);
 	assert.match(prompt, /之后：task-3 · Document it/, "the pointer names the next task, not an earlier one");
 	assert.match(prompt, /\[PI GOAL NOW goalId=\S+ taskId=task-2 10m0s · 987654 tokens\]/, "the header carries usage; that is what re-anchors the pointer every request");
@@ -476,7 +476,7 @@ test("the closing block points at the current task, with usage as its clock", ()
 	assert.match(goalPrompt(goal), /之后：无（这是最后一个待办）/);
 
 	goal.currentTaskId = undefined;
-	assert.match(goalPrompt(goal), /从第一个待办开始：task-2/);
+	assert.match(goalPrompt(goal), /从第一个待办开始：task-2 · Write the exporter/);
 
 	const noTasks = { ...goal, taskList: undefined, currentTaskId: undefined };
 	assert.match(goalPrompt(noTasks), /按上方目标继续推进/);
