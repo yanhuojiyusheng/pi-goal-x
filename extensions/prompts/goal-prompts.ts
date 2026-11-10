@@ -247,14 +247,21 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, conte
  * The second injected block: what to do NOW, what "done" means for it, and the
  * step after it. It replaced the usage snapshot, which sat at the end of the
  * request — the position the model reads last — and carried only token counts.
- * Its text depends solely on the current task and its neighbours, so it stays
- * byte-identical between task transitions and is retained verbatim.
+ *
+ * The header carries the goal's cumulative usage. That looks like decoration and
+ * is not: it is what makes the block differ on every request, so retention
+ * appends a fresh copy at the tail and the pointer never drifts behind the
+ * newest turn. Retention's own byte bound then re-anchors the copy once per
+ * window without any request counter of its own.
  */
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
+	const usage = formatUsage(goal);
+	const header = (taskId?: string): string =>
+		`[PI GOAL NOW goalId=${goal.id}${taskId ? ` taskId=${taskId}` : ""}${usage ? ` ${usage}` : ""}]`;
 	const lines: string[] = [];
 	const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
 	const current = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
-	if (index) lines.push(`[PI GOAL NOW goalId=${goal.id}${current ? ` taskId=${excerpt(current.id, 80, "tasks")}` : ""}]`);
+	if (index) lines.push(header(current ? excerpt(current.id, 80, "tasks") : undefined));
 	if (index && current) {
 		const taskId = excerpt(current.id, 80, "tasks");
 		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
@@ -274,7 +281,7 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 		}
 		lines.push(`进度：${index.complete}/${index.ordered.length} 完成`);
 	} else {
-		lines.push(`[PI GOAL NOW goalId=${goal.id}]`);
+		lines.push(header());
 		lines.push("下一步：按上方目标继续推进；完成后用 update_goal({status:\"complete\"}) 申请独立审计。");
 	}
 	const { runs } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
@@ -286,6 +293,17 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 export function goalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
 	const { state, counters } = goalPromptParts(goal, settings);
 	return `${state}\n${counters}`;
+}
+
+/** Cumulative goal usage, or an empty string when the goal has spent nothing yet. */
+function formatUsage(goal: GoalRecord): string {
+	const bits: string[] = [];
+	if (goal.usage.activeSeconds > 0) {
+		const s = goal.usage.activeSeconds;
+		bits.push(`${Math.floor(s / 60)}m${s % 60}s`);
+	}
+	if (goal.usage.tokensUsed > 0) bits.push(`${goal.usage.tokensUsed} tokens`);
+	return bits.join(" · ");
 }
 
 function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {

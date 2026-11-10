@@ -452,7 +452,7 @@ test("allowance configuration refreshes cached guidance without bloating disable
 	assert.match(zero, /0\/0 \(automatic continuation disabled\)/);
 });
 
-test("the closing block points at the current task instead of usage counters", () => {
+test("the closing block points at the current task, with usage as its clock", () => {
 	const goal = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
 	goal.usage = { tokensUsed: 987654, activeSeconds: 600 };
 	goal.taskList = {
@@ -465,11 +465,12 @@ test("the closing block points at the current task instead of usage counters", (
 	} as GoalTaskList;
 	goal.currentTaskId = "task-2";
 	const prompt = goalPrompt(goal);
-	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2\]/);
+	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2 .*\]/);
 	assert.match(prompt, /现在做：task-2 · Write the exporter/);
 	assert.match(prompt, /验收：Only filtered rows are exported/);
 	assert.match(prompt, /之后：task-3 · Document it/, "the pointer names the next task, not an earlier one");
-	assert.doesNotMatch(prompt, /987654|10m0s/, "cumulative usage never enters the model context");
+	assert.match(prompt, /\[PI GOAL NOW goalId=\S+ taskId=task-2 10m0s · 987654 tokens\]/, "the header carries usage; that is what re-anchors the pointer every request");
+	assert.doesNotMatch(prompt.slice(0, prompt.indexOf("[PI GOAL NOW")), /987654/, "usage never enters the stable policy block");
 
 	goal.currentTaskId = "task-3";
 	assert.match(goalPrompt(goal), /之后：无（这是最后一个待办）/);
