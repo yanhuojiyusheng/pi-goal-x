@@ -23,6 +23,16 @@ The extension saves goal objectives, tasks, and progress across sessions. You ca
 pi install npm:pi-goal-x
 ```
 
+### From source
+
+```bash
+git clone https://github.com/tmonk/pi-goal-x
+cd pi-goal-x
+pi install .
+```
+
+Pi loads `extensions/goal.ts` directly, so there is no build step and nothing else to compile. Node 22.19 or newer is required. The clone is used in place rather than copied, so `git pull` followed by `/reload` inside Pi applies an update. For development, run `npm install`, then `npm run check` for the type check or `npm test` for the test suite.
+
 ## Create a goal
 
 ```text
