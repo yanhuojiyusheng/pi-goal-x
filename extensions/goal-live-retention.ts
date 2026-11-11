@@ -58,7 +58,7 @@ export const MAX_TRACKED_SESSIONS = 16;
  * most. The request that performs the reset does not consume window budget, so a
  * window is exactly this many fresh requests.
  */
-export const MAX_STATE_REANCHOR_REQUESTS = 24;
+export const MAX_STATE_REANCHOR_REQUESTS = 128;
 
 export interface FreshLiveTails {
 	state: string;

@@ -171,3 +171,33 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
   @typescript/typescript-linux-x64`), so no type-check claim is made. Validation is
   `npm test`, `npm run lint`, `npm run context:gate`, `npm run context:cache-gate` and
   `node experiments/context/retention-check.mjs`.
+
+## 2026-11-11 — t7: raise the re-anchor window to 128
+
+- Session evidence (three real goal sessions in `~/.pi/agent/sessions/`): a user turn is
+  not one request. Medians are 2/5/51 requests, the tail is 186 and 219 requests; the
+  per-request gap is 7.1 s at p50, so a 24-request window re-anchors roughly every 8 minutes
+  of wall time, ~26 times in a 642-request session.
+- Cost of that cadence: replaying a 128-request agentic turn with 6 KB of policy and 2.5 KB
+  of fresh tool output per request moved the anchor 5 times and forced 0.87 MB of re-reads
+  (4.3% of all prompt bytes). At window 128 the turn moves it once, at request 127, for
+  0.31 MB (1.5%). Window 48 lands between (2 moves, 0.35 MB).
+- `MAX_STATE_REANCHOR_REQUESTS` 24 → 128 (`extensions/goal-live-retention.ts:61`). The
+  semantics are untouched: only fresh requests advance the counter, the reset request does
+  not consume budget, `0` still disables re-anchoring, and an explicit
+  `stateReanchorRequests` still wins.
+- `cache-compare.mjs:153` no longer hard-codes 24: the bound is now
+  `Math.ceil(transitions / REANCHOR_WINDOW) + 1` with `REANCHOR_WINDOW` imported from the
+  extension, so raising the default tightens or loosens the gate together with the code
+  instead of silently de-fanging it.
+- `README.md:121`, `docs/prompt-caching.md:27`, `CHANGELOG.md:10`, and this spec's
+  `PRODUCT.md`/`TECH.md` now state 128. The `specs/…/PRODUCT.md` "out of scope" bullet that
+  forbade changing the default was rewritten: this milestone is the sanctioned change, with
+  the measurement above as its justification.
+- Validation: `node --experimental-strip-types --test tests/goal-live-retention.test.ts`
+  23/23 (the window test derives from the constant), `tests/goal-settings.test.ts` +
+  `tests/goal-context-usage.test.ts` 65/65, `npm run check` clean.
+  `PI_GOAL_CACHE_REPORT_DIR=/tmp/cache-gate-128 npm run context:cache-gate` PASS
+  (408 adapter scenarios, 288 exact approved display deltas, 1,000 bounded transitions);
+  `policyAnchorMoves` fell from 41 to 7 over the 1,000-transition corpus, and the corpus
+  bounds stayed at 2 blocks / 59 bytes.

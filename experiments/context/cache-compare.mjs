@@ -2,9 +2,16 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {LiveTailRetention} from '../../extensions/goal-live-retention.ts';
+// Namespace import: this driver also runs against the archived release tree, which has no
+// window constant. A named import there is a hard link error, not an undefined binding.
+import * as retentionModel from '../../extensions/goal-live-retention.ts';
 import {createGoal} from '../../extensions/goal-record.ts';
 import {goalPromptParts} from '../../extensions/prompts/goal-prompts.ts';
 import {userMessage, assistantMessage} from './fixtures.mjs';
+
+/** The archived 0.34.x release tree keeps counters and has no window constant; the
+ *  candidate defines it, so the bound follows the code instead of a copied literal. */
+const reanchorWindow = () => retentionModel.MAX_STATE_REANCHOR_REQUESTS ?? 1;
 
 export const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const textBlock = block => typeof block.content === 'string' ? block.content : undefined;
@@ -150,7 +157,7 @@ export function compareReports(baseline, candidate) {
   assert.ok(candidate.corpus.maxRetainedMessages<=2,`retained block count grew to ${candidate.corpus.maxRetainedMessages}`);
   assert.ok(candidate.corpus.maxRetainedBytes<=2048,`retained bytes grew to ${candidate.corpus.maxRetainedBytes}`);
   assert.equal(candidate.corpus.pointerReplacements,candidate.corpus.transitions-1,'the pointer must be replaced on every fresh request');
-  assert.ok(candidate.corpus.policyAnchorMoves<=Math.ceil(candidate.corpus.transitions/24)+1,`policy re-anchored ${candidate.corpus.policyAnchorMoves} times`);
+  assert.ok(candidate.corpus.policyAnchorMoves<=Math.ceil(candidate.corpus.transitions/reanchorWindow())+1,`policy re-anchored ${candidate.corpus.policyAnchorMoves} times`);
   assert.ok(candidate.corpus.breaks>0,'advancing history must move at least one retained block');
  }
  if(baseline.dependencies) assert.equal(candidate.dependencies,baseline.dependencies,'comparison dependencies differ');

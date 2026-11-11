@@ -52,15 +52,15 @@ if (shared < blocks.length) {
 }
 ```
 
-`MAX_STATE_REANCHOR_REQUESTS = 24`. The request that performs the reset does not consume
-window budget, so a window is exactly 24 fresh requests (resets on requests 24, 48, 72, …).
+`MAX_STATE_REANCHOR_REQUESTS = 128`. The request that performs the reset does not consume
+window budget, so a window is exactly 128 fresh requests (resets on requests 128, 256, …).
 Counting the reset request as one made every window after the first only 23 requests long —
 the branch shipped that off-by-one and the rewritten window test caught it. Only fresh
 content advances the window, so an identical retry stays byte-identical (and warm).
 
 ### 1.2 Window as a setting
 
-- `MAX_STATE_REANCHOR_REQUESTS` stays the default constant (24); it becomes the default
+- `MAX_STATE_REANCHOR_REQUESTS` stays the default constant (128); it becomes the default
   value of the new setting rather than the only value.
 - `FreshLiveTails` gains `window?: number`. It is **not** part of `freshBlocks`, so it
   never participates in `shared` and never changes block content; changing the setting does
@@ -107,7 +107,7 @@ the interactive `/goal-settings` row:
 | Resolution across layers | `resolveLeaf<number | undefined>` next to `maxAutonomousRuns` (~866), `defaultValue: undefined` |
 | Exported snapshot | the returned object (~934) |
 | Persistence | only when defined (`buildPersistedLayer`, ~1302) |
-| Settings summary row | effective-settings list (~1353): label "policy re-anchor window (0 = never)", `undefined` → `"24 requests (default)"`, `0` → `"never"`, else `"<n> requests"` |
+| Settings summary row | effective-settings list (~1353): label "policy re-anchor window (0 = never)", `undefined` → `"128 requests (default)"`, `0` → `"never"`, else `"<n> requests"` |
 | Interactive settings row | `SETTING_ROWS` in `extensions/goal-commands.ts` (~391): `positiveInteger`, 0 allowed by the row-driven lower bound, help text explains the cache cost |
 
 `goal-live-retention.ts` imports only `node:crypto` and `./goal-record.ts`, so importing the
@@ -159,7 +159,7 @@ the candidate only:
 
 - `maxRetainedMessages <= 2`, `maxRetainedBytes <= 2048`;
 - `pointerReplacements === transitions - 1`;
-- `policyAnchorMoves <= Math.ceil(transitions / 24) + 1` (43 for 1000 transitions);
+- `policyAnchorMoves <= Math.ceil(transitions / REANCHOR_WINDOW) + 1` (9 for 1000 transitions at window 128);
 - `breaks > 0` as a liveness check (the upper bound is gone: it was always satisfied).
 
 ### 3.3 Pointer body validation
@@ -205,7 +205,7 @@ Unit tests (`tests/goal-live-retention.test.ts`):
   identical retry).
 - Restored `splitsToolBatch` shapes: `role: "toolResult"`, `role: "tool"` and a
   content-block `tool_result` result, each appended after an unchanged history.
-- Window setting: default (24, byte-identical to today), custom value, `0` (no re-anchor),
+- Window setting: default (128), custom value, `0` (no re-anchor),
   and `1`.
 
 Settings tests: parse/persist/round-trip, invalid values (negative, fractional, string
@@ -244,5 +244,7 @@ Record each revert, the failing assertion and the restore in `MILESTONES.md`.
   measures either retention model; add `window` only to the candidate-side call sites.
 - No live provider measurement is added. `policyAnchorMoves` is a statement about request
   construction, not a hit-rate claim.
-- The default value stays 24. Changing the default, removing the window, or persisting the
+- The default value is 128 (raised from the original 24 after measuring a real agentic turn:
+  128 requests at window 24 moved the anchor 5 times and forced 0.87 MB of re-reads, 4.3% of
+  all prompt bytes; window 128 moved it once, 0.31 MB, 1.5%). Changing the default further, removing the window, or persisting the
   pointer into the session is out of scope for this campaign.

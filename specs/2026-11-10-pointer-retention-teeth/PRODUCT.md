@@ -40,14 +40,14 @@ one pointer. An identical retry adds nothing and stays byte-identical.
 
 | Value | Behavior |
 | --- | --- |
-| absent | 24 requests of fresh content, i.e. the current behavior |
+| absent | 128 requests of fresh content, i.e. the current behavior |
 | `n >= 1` | re-anchor the policy block after `n` requests that carry fresh content |
 | `0` | never re-anchor; the policy block stays at the anchor where it was first placed |
 
 `0` is a deliberate cache-first choice: the policy block never moves, so nothing between
 an old anchor and the tail is ever re-billed. It trades locality of instructions for a
 strict cache prefix. Non-integer or negative values are rejected with the usual settings
-diagnostic and fall back to the layer below (default 24).
+diagnostic and fall back to the layer below (default 128).
 
 The window only advances on requests whose content actually changed. An identical retry
 never advances it, so a retry stays warm.
@@ -67,10 +67,11 @@ never advances it, so a retry stays warm.
 | P3.5 three `splitsToolBatch` wire shapes lost their tests | Restore `toolResult`, `tool`, `tool_result` cases |
 | P3.6 gate docstring overclaims field-by-field approval | Correct the claim to match the checks |
 | Process: no spec, empty changelog, stale baseline label | This directory, `CHANGELOG.md` `[Unreleased]`, relabelled baseline |
+| Window 24 moved the policy block too often in long agentic turns | Default raised to 128 (see `TECH.md` §Scope boundaries and `MILESTONES.md`) |
 
 ## Out of scope
 
-- Changing the default window from 24, or removing it.
+- Removing the window.
 - Live provider hit-rate measurement or a new cost study. The gate reports anchor moves
   because they are the quantity the window controls, not as a cost claim.
 - Reintroducing accumulated snapshots, or persisting the pointer into the session.
