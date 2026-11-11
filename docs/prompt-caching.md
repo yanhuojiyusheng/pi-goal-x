@@ -26,6 +26,49 @@ Provider references: [Anthropic prompt caching](https://platform.claude.com/docs
 
 Active requests split two request-only blocks with opposite needs. The policy block (objective, tasks, lifecycle rules, limits, scheduling state and applicable recovery/auditor reminders) is large and stable, so it is retained verbatim at a verified history anchor and re-anchored once per `stateReanchorRequests` requests that carry fresh content (default 128; `0` keeps the first anchor for the session). The pointer block (current task, its contract, the next task, progress, and the usage header) must be read last, so it is replaced rather than accumulated: each request drops the previous copy and appends the current one at the tail. An identical request adds nothing and stays byte-identical, which keeps retries warm.
 
+### Why the pointer moves on every request
+
+A prefix cache is a longest-common-prefix match: everything up to the first differing
+byte is reused, everything after it is billed as fresh input. That gives one cost model
+for every way of placing the pointer, parameterised by how often it moves.
+
+Let `N` be the tokens a request adds (model output plus tool results), `P` the pointer
+size, and `C` the number of requests the pointer survives before it is re-placed
+(`C = 1` places it on every request; `C = k` places it once per turn of `k` requests).
+On the request that moves it, the content accumulated since the old anchor, the new
+content and the new pointer are all fresh; on the other `C - 1` requests everything but
+the new content is cached:
+
+```
+cycle        = C·N + P                    (the moving request)
+             + (C-1)·N                    (the requests that keep it in place)
+per request  = ((2C-1)·N + P) / C
+excess vs C=1 = (C-1)·(N - P)
+```
+
+The `C = 1` case reduces to `N + P`, which is what this extension pays today, and the
+excess grows with `C - 1` on the left and with `N - P` on the right. Once `C > 1`, the
+factor `C-1` immediately delivers nearly all of the penalty; pushing `C` higher only
+smooths the remaining fraction.
+
+Priced at DeepSeek's cache-hit/`miss` difference (`$0.294` per million tokens at the
+`deepseek-flash` rates in `request_costs.snapshot`: `$0.3/M` input against `$0.006/M`
+cache read), the net of moving less often is positive only when `N < 2P`:
+
+```
+net = requests × (1 - 1/C) × (2P - N) × $0.294/M
+```
+
+Measured on two real goal sessions (`N` ≈ 1,947 tokens per request, derived from an
+observed 2,187-token average miss at `P = 240`), moving the pointer once per turn
+instead of once per request costs `+$0.304` over 642 requests (`01a1c3ec`) and
+`+$0.125` over 251 requests (`01a1c464`) — 46% and 34% of those sessions' input bills.
+With the pointer already reduced to ≈90 tokens the same comparison is worse (`+$0.358`
+and `+$0.146`), because the smaller `P` raises `N - P`. Bucketing the usage header so
+the pointer text is byte-stable for several requests has the same trade-off at a smaller
+`C`, so it is not worth doing either; the only lever that holds `C = 1` and still cuts
+the bill is shrinking `P`, which is why the contract line is not repeated here.
+
 Replacing the pointer is the one deliberate cache break: the shared prefix ends at the policy block and the cost is the pointer itself, which would have been new content either way. The window reset is the expensive one, because everything between the old anchor and the tail loses its cache. Policy changes (including budget/run-limit removal), rewritten history, unsafe tool-result boundaries and an exhausted window reset retention; at most 16 session/model identities are tracked and no full-state tails are persisted. Older copies are historical, and the current policy takes precedence over cache reuse.
 
 Explicit-marker relocation skips all retained live text and tolerates Pi's trailing effort-only messages. Another extension's content-bearing suffix is left alone. Changing models/providers starts a separate retention identity. Unknown session identities do not retain history between requests.

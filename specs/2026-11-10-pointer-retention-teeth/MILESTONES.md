@@ -201,3 +201,26 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
   (408 adapter scenarios, 288 exact approved display deltas, 1,000 bounded transitions);
   `policyAnchorMoves` fell from 41 to 7 over the 1,000-transition corpus, and the corpus
   bounds stayed at 2 blocks / 59 bytes.
+
+## 2026-11-11 — t8: the cache model that justifies replacing the pointer per request
+
+- Reviewed an alternative the operator proposed twice: keep the pointer where the turn
+  started and only move it at turn boundaries. Derivation, with `N` = tokens a request adds,
+  `P` = pointer size, `C` = requests the pointer survives:
+  `cycle = C·N + P + (C-1)·N`, `per request = ((2C-1)·N + P)/C`, `excess vs C=1 = (C-1)·(N-P)`.
+  Net after pricing at the measured `deepseek-flash` hit/miss spread ($0.294/M) is
+  `requests × (1 - 1/C) × (2P - N) × $0.294/M`, so moving less often pays only when `N < 2P`.
+- Measured inputs: `N ≈ 1,947` (from the observed 2,187-token average miss at `P = 240`),
+  real session shapes 642 requests / 36 turns and 251 requests / 3 turns. Moving once per
+  turn costs `+$0.304` and `+$0.125`, i.e. 46% and 34% of those sessions' input bills; at the
+  current `P ≈ 90` it is `+$0.358` and `+$0.146`. Byte-stable usage bucketing sits at a
+  smaller `C` on the same curve and is not worth doing either.
+- Two earlier attempts at this argument were wrong and were retracted in conversation: the
+  first treated the freeze cost as a constant instead of `(C-1)(N-P)`; the second double
+  counted the previous turn's content as `(k-1)N` on top of `kN`. The operator caught both.
+- Written into `docs/prompt-caching.md` as a new "Why the pointer moves on every request"
+  section between the retention description and the deliberate-break paragraph, because the
+  document previously described the mechanism but carried no cost model.
+- Consequence for scope: shrinking `P` is the only lever left; raising `C` is closed. The
+  contract line was already removed from the pointer in `9d74dec`, and `stateReanchorRequests`
+  was already raised to 128 in `b95a23d`; both stand, and no code changes here.
