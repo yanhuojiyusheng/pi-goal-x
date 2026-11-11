@@ -281,3 +281,48 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
   fixtures, `npm run context:cache-gate` passed 408 adapter scenarios and 1,000 bounded
   transitions, and `retention-check.mjs` passed. `npm test` passed 1,234 of 1,239 tests;
   the same five `goal-widget.test.ts` terminal keyboard cases fail on the unchanged branch.
+
+## 2026-11-11 — approved compact active block
+
+- Updated PRODUCT first and TECH second after approval of the complete example. Kept
+  one request-only tail, moved full actionable task ID and cumulative time/tokens into
+  its first ACTIVE header, and removed the trailing NOW header. Fresh usage is built
+  outside the stable fragment memo; repeated calls reflect usage and settings changes.
+- Regular automatic mode now shows the approved six RULES and omits default running,
+  regular mode, unlimited limits and irrelevant strict scheduling declarations.
+  Sisyphus discipline, strict/wait scheduling, finite limits, run/context displays,
+  auditor rejection and post-compaction reminders retain their applicable paths.
+- Current task details now agree with the actionable header. Ancestor contracts remain
+  bounded and visible, next work is title-only with mandatory retrieval before acting,
+  counts include all nodes, and lightweight descendants are not suggested as next work.
+  Legacy task-list output, untrusted objective boundaries and tiny checkpoints survive.
+- TDD: four new rendering tests failed before implementation, then passed. Updated old
+  format assertions and added exact compact-cache approvals for 24 fixture transitions
+  (288 adapter rows). SHA-256 approvals require matching release policy, counters and
+  candidate text; raw envelopes/history/tools/options/markers still undergo comparison.
+  Mutation regressions reject rewritten policy/objective, extra text, roles, history,
+  duplicated live blocks, markers, cache identity and unknown fixture approvals.
+- First full unit run found three old-format assertions and five widget failures.
+  The latter come from untracked `.pi/pi-goal-x-settings.json`, where toggleExpand is
+  Ctrl+Alt+D rather than the Ctrl+Shift+T assumed by tests. An archived HEAD without
+  local settings passed all 85 widget tests. User settings were left untouched.
+- Full all-suite validation also reproduced two failures on unchanged HEAD: SDK tests
+  still expected a pinned policy in a merged-block tree, and the settings menu expected
+  22 rows while rendering 23. Corrected those test assertions (including exact history
+  growth and compatibility-setting visibility), with no runtime/settings changes.
+- Validation of the final code in an isolated copy of this diff, excluding local `.pi`:
+  `npm run test:all`: 1,309 passed, 0 failed, 99 files, about 46.5 seconds; includes unit,
+  integration and e2e/actual SDK serialization. `npm run check` and `npm run lint` passed.
+  `context:gate` passed all 24 fixtures; `context:cache-gate` passed 408 adapter scenarios,
+  288 exact approved deltas and 1,000 bounded transitions. Evidence logs:
+  `/tmp/goal-compact-all-final.log`, `/tmp/goal-compact-check-final.log`,
+  `/tmp/goal-compact-lint-final.log`, `/tmp/goal-compact-context-gate.log`,
+  `/tmp/goal-compact-cache-final/`. Provider captures stop before HTTP; no paid calls or
+  provider billing/latency claims. Updated context baseline, changelog and prompt-caching
+  documentation, replacing its unconditional cost claim with conditional amortization.
+- Implementation did not change README or user settings and used no subagents. On
+  follow-up, the user requested separate local commits: stale test assertions, compact
+  prompts, cache validation and documentation. Before committing, the isolated full
+  suite passed again: 1,309/1,309 in about 45.7 seconds
+  (`/tmp/goal-compact-before-commit.log`). Pi's configured local package resolves to
+  this source checkout; its TypeScript entry needs `/reload`, with no build step.

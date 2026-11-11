@@ -6,7 +6,7 @@ The request layout is:
 
 1. Host system prompt and tool schemas.
 2. Conversation history, with each goal checkpoint normalized to a tiny, stable trigger in its original position.
-3. One request-only block carrying the goal policy (objective, tasks, lifecycle rules, limits, scheduling state and applicable reminders), followed by a header with the goal ID, the actionable task ID when focused, and usage. The task section carries progress and bounded task excerpts; a focused phase can appear as the current task even when the header identifies a child, and the next task is not always among the excerpts. With no current task or no task list, the tail also provides guidance for how to proceed. The block is rebuilt and appended at the tail on every request.
+3. One request-only block beginning with an ACTIVE header containing the goal ID, actionable task ID when focused, and cumulative time/tokens. It then carries applicable lifecycle rules, the objective, current task details and ancestor contracts, the next pending task's title, finite limits, scheduling state and reminders. Missing task details must be retrieved before work starts. With no current task or no task list, the block also provides guidance for how to proceed. It is rebuilt and appended at the tail on every request.
 
 Changing goal state never rewrites the system prompt or historical messages. The full goal-state message is not persisted into the session. Old checkpoints remain until Pi compacts history; retaining small markers avoids shifting the prefix on every continuation. Display-only auditor messages are consistently excluded, and tool calls stay adjacent to their results.
 
@@ -24,54 +24,17 @@ Validation includes consecutive request-prefix regressions; actual Anthropic, An
 
 Provider references: [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) describes exact-prefix matching and explicit breakpoints; [DeepSeek context caching](https://api-docs.deepseek.com/guides/kv_cache/) describes its automatic prefix cache and usage counters.
 
-Active requests inject a single block at the tail and keep nothing between requests. Pinning part of it costs more than re-sending it: on the request that moves a pin, everything accumulated since the old anchor is re-read, and that distance grows with the lifetime of the pin, while a re-emitted block only ever costs the block. The break-even is the block's own size — holding pays only when a request adds less text than the block carries, which a tool loop never does. Because nothing is retained, an identical retry stays byte-identical and rewrites of history need no repair.
+Active requests inject one block at the tail. Its first ACTIVE header carries the actionable task ID and cumulative usage. Regular mode omits default status/mode and unlimited limits; current task details agree with the header, inherited contracts remain visible, and the next task is shown by title. Retrieve omitted details and contracts before starting that task. Special-mode rules, finite limits and runtime reminders appear when applicable.
 
-`stateReanchorRequests` is still accepted and persisted, but it no longer changes behavior: a single replaced block has nothing to re-anchor.
+`stateReanchorRequests` is still accepted and persisted, but it no longer changes behavior: a single replaced block has nothing to re-anchor. Identical retries stay byte-identical, and history rewrites need no retained-anchor repair.
 
-### Why the pointer moves on every request
+### Interpreting cost comparisons
 
-A prefix cache is a longest-common-prefix match: everything up to the first differing
-byte is reused, everything after it is billed as fresh input. That gives one cost model
-for every way of placing the pointer, parameterised by how often it moves.
+A smaller live block reduces the text submitted in each request. Comparing its billed cost with a retained policy also requires provider cache rules, output reuse, re-anchor frequency and actual usage counters. A pre-HTTP payload comparison cannot establish those savings.
 
-Let `N` be the tokens a request adds (model output plus tool results), `P` the pointer
-size, and `C` the number of requests the pointer survives before it is re-placed
-(`C = 1` places it on every request; `C = k` places it once per turn of `k` requests).
-On the request that moves it, the content accumulated since the old anchor, the new
-content and the new pointer are all fresh; on the other `C - 1` requests everything but
-the new content is cached:
+For an idealized steady-state model, let S be the policy size, P the appended pointer size and C the re-anchor interval. If each ordinary retained request has N fresh tokens plus P, and re-anchoring additionally rereads the history since the old anchor, its average fresh input is `(2 - 1/C)N + S/C + P`. Replacing the whole block each request instead has `N + S` fresh input under the same assumptions. The difference, retained minus replaced, is `(1 - 1/C)(N - S) + P`. Accumulated cached pointers add their own cache-read charge.
 
-```
-cycle        = C·N + P                    (the moving request)
-             + (C-1)·N                    (the requests that keep it in place)
-per request  = ((2C-1)·N + P) / C
-excess vs C=1 = (C-1)·(N - P)
-```
-
-The `C = 1` case reduces to `N + P`, which is what this extension pays today, and the
-excess grows with `C - 1` on the left and with `N - P` on the right. Once `C > 1`, the
-factor `C-1` immediately delivers nearly all of the penalty; pushing `C` higher only
-smooths the remaining fraction.
-
-Priced at DeepSeek's cache-hit/`miss` difference (`$0.294` per million tokens at the
-`deepseek-flash` rates in `request_costs.snapshot`: `$0.3/M` input against `$0.006/M`
-cache read), the net of moving less often is positive only when `N < 2P`:
-
-```
-net = requests × (1 - 1/C) × (2P - N) × $0.294/M
-```
-
-Measured on two real goal sessions (`N` ≈ 1,947 tokens per request, derived from an
-observed 2,187-token average miss at `P = 240`), moving the pointer once per turn
-instead of once per request costs `+$0.304` over 642 requests (`01a1c3ec`) and
-`+$0.125` over 251 requests (`01a1c464`) — 46% and 34% of those sessions' input bills.
-With the pointer already reduced to ≈90 tokens the same comparison is worse (`+$0.358`
-and `+$0.146`), because the smaller `P` raises `N - P`. Bucketing the usage header so
-the pointer text is byte-stable for several requests has the same trade-off at a smaller
-`C`, so it is not worth doing either; the only lever that holds `C = 1` and still cuts
-the bill is shrinking `P`, which is why the contract line is not repeated here.
-
-Replacing the pointer is the one deliberate cache break: the shared prefix ends at the policy block and the cost is the pointer itself, which would have been new content either way. The window reset is the expensive one, because everything between the old anchor and the tail loses its cache. Policy changes (including budget/run-limit removal), rewritten history, unsafe tool-result boundaries and an exhausted window reset retention; at most 16 session/model identities are tracked and no full-state tails are persisted. Older copies are historical, and the current policy takes precedence over cache reuse.
+If the retained layout can reuse previous model output, use the genuinely uncached tool/new-input tokens in that difference rather than all added history. DeepSeek V4.1 persists cache prefix units, including input and model-output boundaries, and cache availability is best effort. Arbitrary longest-common-prefix estimates and repriced sessions from another model do not establish its actual cache hits, latency or bill. Use provider usage counters for a matched comparison.
 
 Explicit-marker relocation skips all retained live text and tolerates Pi's trailing effort-only messages. Another extension's content-bearing suffix is left alone. Changing models/providers starts a separate retention identity. Unknown session identities do not retain history between requests.
 
