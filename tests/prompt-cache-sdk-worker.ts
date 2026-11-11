@@ -111,13 +111,9 @@ for (const flavor of ["anthropic-messages", "openai-completions", "openai-respon
  });
 }
 
-// Advancing-history regression: a completed assistant turn entering history must
-// not displace the retained policy block. The production retention helper builds
-// each request (hook wiring is tested separately): everything before the
-// per-request pointer is an exact prefix of the next request, letting implicit
-// caches (OpenAI Responses / Chat Completions, which carry no explicit marker)
-// reuse the policy block and completed turns. Only the pointer, which has to be
-// read last, is rewritten.
+// Advancing-history regression: a single live block follows real history. Advancing turns extend only the
+// history prefix; the goal block is replaced at the new tail on every request.
+// These assertions concern serialized payload construction, not provider hits.
 for (const flavor of ["openai-completions", "openai-responses"] as const) {
 	test(`real ${flavor} serialization keeps an advancing prefix across assistant turns`, async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "goal-cache-advance-"));
@@ -154,12 +150,13 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			assertExtends(reusablePrefix(b), reusablePrefix(a));
 			assertExtends(reusablePrefix(c), reusablePrefix(b));
 			assert.equal(reusablePrefix(c).length - reusablePrefix(b).length, 1, "the second advance adds only its own completed turn");
-			assert.deepEqual(pointer(a).filter((m: any) => JSON.stringify(m).includes("hold the line")), pointer(b).filter((m: any) => JSON.stringify(m).includes("hold the line")), "the policy block keeps its anchor");
+			assert.equal(JSON.stringify(pointer(a)).split("Objective: hold the line").length - 1, 1);
+			assert.equal(JSON.stringify(pointer(b)).split("Objective: hold the line").length - 1, 1, "one fresh goal block carries the policy at the tail");
+			assert.ok(!JSON.stringify(reusablePrefix(b)).includes("Objective: hold the line"), "goal policy is never persisted into real history");
 			assert.ok(JSON.stringify(pointer(b)).includes("Usage: 200 tokens"), "the current pointer is the last block");
 			assert.ok(!JSON.stringify(reusablePrefix(b)).includes("Usage: 100 tokens"), "the replaced pointer leaves no copy behind");
-			// Two advances add at most the completed turns plus their small counter tails:
-			// the stable policy block is retained in place, never resent.
-			assert.ok(c.length - a.length <= 4, "growth comes from completed turns, not from repeated pointers");
+			// Only completed turns grow history; the live block remains a single tail.
+			assert.equal(c.length - a.length, 2, "two completed turns add exactly two history messages");
 			// Real tool-loop history, including parallel calls/results, followed by
 			// a user turn. No retained user tail may split a call/result pair.
 			session.push({...turn(3, 4), content: [
