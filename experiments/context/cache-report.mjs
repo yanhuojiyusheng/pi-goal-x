@@ -10,7 +10,7 @@ import {cacheGoalHistory} from '../../extensions/goal-prompt-cache.ts';
 import {LiveTailRetention} from '../../extensions/goal-live-retention.ts';
 import {captureOne} from './capture-context.mjs';
 import {FIXTURES, userMessage, assistantMessage} from './fixtures.mjs';
-import {digest, summarize, compareReports, investigateCache} from './cache-compare.mjs';
+import {digest, summarize, compareReports, investigateCache, mergedBlock} from './cache-compare.mjs';
 
 const prefix = (a, b) => { let n=0; while(n<a.length && n<b.length && a[n].hash===b[n].hash) n++; return n; };
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -55,7 +55,11 @@ export async function buildReport({blockBound=2}={}) {
        const count=prefix(previous.blocks,current.blocks);
        // Explicit marker movement is covered separately; raw bytes stay recorded.
        current.reuse={blocks:count,bytes:previous.blocks.slice(0,count).reduce((s,b)=>s+b.bytes,0)};
-       if(flavor.startsWith('openai')) assert.equal(count,previous.blocks.length,'unchanged-policy prefix lost');
+       // A merged block moves to the tail every request, so the shared prefix is
+       // everything the previous request had except that block; a split tree keeps
+       // its pinned policy block and shares one more.
+       const expectedShared=mergedBlock()?previous.blocks.length-1:previous.blocks.length;
+       if(flavor.startsWith('openai')) assert.equal(count,expectedShared,'unchanged-policy prefix lost');
       }
       const retry=await serialize(`retry-${n}`,captured,await capture.runContext(base));
       assert.deepEqual(retry.blocks,current.blocks,'identical retry changed');
@@ -73,7 +77,11 @@ export async function buildReport({blockBound=2}={}) {
   const history=[userMessage('bounded history'),{role:'user',timestamp:1,content:[{type:'text',text:'tool output '.repeat(4096)},{type:'image',mimeType:'image/png',data:'a'.repeat(16384)}]}];
   let last, previousLive=[], breaks=0, pointerReplacements=0, policyAnchorMoves=0, maxRetainedMessages=0, maxRetainedBytes=0;
   for(let n=0;n<1000;n++) {
-   const fresh={state:'unchanging policy',counters:`Goal snapshot: ${n}`,pointer:`[PI GOAL NOW goalId=bounded]\nNow: step ${n}`};
+   // One driver, two shapes: a merged tree re-emits a single block, a released
+   // tree keeps the split parts (and ignores the extra fields it does not know).
+   const fresh=mergedBlock()
+    ? {block:`unchanging policy\nGoal snapshot: ${n}\n[PI GOAL NOW goalId=bounded]\nNow: step ${n}`}
+    : {state:'unchanging policy',counters:`Goal snapshot: ${n}`,pointer:`[PI GOAL NOW goalId=bounded]\nNow: step ${n}`};
    const result=retention.apply('bounded',history,fresh);
    if(last && JSON.stringify(result.messages.slice(0,last.length))!==JSON.stringify(last)) breaks++;
    // Two separate signals: a pointer swap replaces the previous tail text, a policy
@@ -100,7 +108,7 @@ export async function buildReport({blockBound=2}={}) {
   try {source=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();} catch { /* Gate assigns the pinned archive SHA. */ }
   const lockfile=readFileSync(path.join(root,'package-lock.json'));
   const locked=JSON.parse(lockfile);delete locked.version;delete locked.packages[''].version;
-  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,breaks,pointerReplacements,policyAnchorMoves,maxRetainedMessages,maxRetainedBytes},investigation:investigateCache(),rows,samples};
+  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,retentionModel:mergedBlock()?'merged':'legacy',breaks,pointerReplacements,policyAnchorMoves,maxRetainedMessages,maxRetainedBytes},investigation:investigateCache(),rows,samples};
  } finally {rmSync(work,{recursive:true,force:true});}
 }
 

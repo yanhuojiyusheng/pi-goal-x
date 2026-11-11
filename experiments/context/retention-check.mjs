@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { LiveTailRetention } from '../../extensions/goal-live-retention.ts';
+import { mergedBlock } from './cache-compare.mjs';
 
 const median = values => values.sort((a,b) => a-b)[Math.floor(values.length / 2)];
 const rows = [];
@@ -20,7 +21,9 @@ for (const shape of ['text', 'tool-output', 'image']) for (const bytes of [64 * 
   const step = String(i).padStart(3, '0');
   // Both fields ride so this gate covers every retention model: the archived
   // release accumulates `counters`, this tree replaces `pointer`.
-  start=performance.now(); const result=retention.apply('fixture',base,{state:'current policy',counters:`snapshot ${step}`,pointer:`[PI GOAL NOW goalId=fixture]\nNow: step ${step}`}); const elapsed=performance.now()-start;
+  const merged=`current policy\nGoal snapshot: snapshot ${step}\n[PI GOAL NOW goalId=fixture]\nNow: step ${step}`;
+  const fresh=mergedBlock()?{block:merged}:{state:'current policy',counters:`snapshot ${step}`,pointer:`[PI GOAL NOW goalId=fixture]\nNow: step ${step}`};
+  start=performance.now(); const result=retention.apply('fixture',base,fresh); const elapsed=performance.now()-start;
   assert.ok(result.transientContents.length<=2,`live blocks exceed one policy plus one pointer (${result.transientContents.length})`);
   assert.ok(result.transientContents.reduce((n,text)=>n+Buffer.byteLength(text),0)<=4096+14);
   retainedSizes.push(result.transientContents.length);

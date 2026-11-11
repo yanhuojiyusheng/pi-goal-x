@@ -303,7 +303,8 @@ test("late shutdown cannot evict a replacement prefix with the same cache identi
   const first = (await h.event("context_with_system", {messages: base}, incoming.ctx)).messages;
   base.push({role: "assistant", content: [{type: "text", text: "progress"}], timestamp: 2});
   const advanced = (await h.event("context_with_system", {messages: base}, incoming.ctx)).messages;
-  assert.deepEqual(advanced.slice(0, first.length), first);
+  // The live block always rides at the tail, so only the history prefix is literal.
+  assert.deepEqual(advanced.slice(0, first.length - 1), first.slice(0, -1));
   await h.event("session_shutdown", {}, h.ctx);
   assert.deepEqual((await h.event("context_with_system", {messages: base}, incoming.ctx)).messages, advanced);
   const unseenOldContext = {...h.ctx};

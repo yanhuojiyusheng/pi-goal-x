@@ -224,3 +224,38 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
 - Consequence for scope: shrinking `P` is the only lever left; raising `C` is closed. The
   contract line was already removed from the pointer in `9d74dec`, and `stateReanchorRequests`
   was already raised to 128 in `b95a23d`; both stand, and no code changes here.
+
+## 2026-11-11 — t9 (branch `experiment/merged-live-block`): one re-emitted block instead of the pinned policy
+
+- Motivation: the t8 model prices a pin by how far history has advanced since it was
+  placed, `(C-1)(N-P)`, so holding a block pays only when a request adds less text than the
+  block itself carries. Measured on this project: `N ≈ 1,000` tokens per request (762
+  assistant messages: output 769 + tool results 238) against `S ≈ 437` tokens for the policy
+  block (p50 of `goalStateChars` = 1,747 chars over the 24 graded fixtures). `N > S`, so the
+  split architecture was paying for a pin that never breaks even.
+- Change: `extensions/goal-live-retention.ts` keeps nothing between requests. `apply()` takes
+  `{ block: string }` and returns `base` plus one live message at the tail; `FreshLiveBlock`
+  replaces the split pair, `MAX_STATE_REANCHOR_REQUESTS` stays at `0` only so archived gates
+  resolve the name. `goalPromptBlock()` in `extensions/prompts/goal-prompts.ts` composes
+  `policyText()` + `nextStepBlock()`, and `extensions/goal-events.ts:111` joins the parts once
+  at the call site.
+- Gates migrated: `cache-compare.mjs` detects merged trees per row (`merged && aLive.length >
+  bLive.length`) and proves that (a) history is identical once live blocks and synthetic
+  `msg_pi_N` ids are dropped, (b) marker values are identical and never sit on a live message
+  block, (c) the single tail block is the release policy text followed by `\n` and a pointer
+  that passes `pointerTextOk` against the release counters, (d) `replaceOneText` shows nothing
+  but the policy string changed. `cache-report.mjs` and `retention-check.mjs` feed `{block}`;
+  `run-gate.mjs` asserts one live block at the tail.
+- Measured corpus shift (release → merged): `maxRetainedMessages` 32 → 1, `maxRetainedBytes`
+  575 → 79, `breaks` 32 → 999, `pointerReplacements` 32 → 999, `policyAnchorMoves` 32 → 999
+  over the 1,000-transition run. The gate's own bound for merged mode is therefore exactly one
+  live block per request, not a window.
+- Validation: `npm run check` clean; `npm test` 1234 pass / 5 fail, the failures being the
+  pre-existing `tests/goal-widget.test.ts` keyboard cases; `npm run context:gate` PASS after
+  `CONTEXT_BASELINE_LABEL=0.34.1-merged-live-block npm run context:measure`;
+  `PI_GOAL_CACHE_REPORT_DIR=/tmp/cache-gate-m20 npm run context:cache-gate` PASS (408 adapter
+  scenarios, 288 exact approved display deltas, 1,000 bounded transitions);
+  `experiments/context/retention-check.mjs` OK.
+- Deliberately kept for a separate decision: `stateReanchorRequests` is still parsed and
+  persisted, and the settings row still renders it, because dropping a settings key is a
+  user-visible break. It is documented as ignored (`docs/prompt-caching.md`, `README.md:121`).

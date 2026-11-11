@@ -229,18 +229,32 @@ function retainedTaskChars(task: GoalTask): number {
   + (task.skipReason?.length ?? 0) + (task.subtasks?.reduce((n, child) => n + retainedTaskChars(child), 0) ?? 0);
 }
 
-export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; pointer: string } {
-	// The policy block changes only when the goal itself changes; the pointer
-	// block changes when the current task or the usage clock changes. Splitting
-	// them lets request-only injection retain the big stable block verbatim at
-	// its anchor while replacing the small pointer at the tail.
-	// Scheduling instructions ride with the policy block: they are cleared by
-	// omission, so a retained copy would keep issuing a cancelled order.
+/**
+ * The policy text: everything that changes only when the goal itself changes.
+ * Scheduling instructions ride here rather than in the pointer because they are
+ * cleared by omission, so a copy that outlives the decision would keep issuing a
+ * cancelled order.
+ */
+function policyText(goal: GoalRecord, settings?: GoalSettings): string {
 	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
 	const { instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
 	const limits = `Limits: lifetime tokens=${goal.tokenBudget ?? "none"}; runs=${settings?.maxAutonomousRuns ?? "unlimited"}.`;
-	const state = [fixed, instructions, limits, "Usage spans goal turns, not context. Latest snapshot supersedes earlier snapshots."].filter(Boolean).join("\n");
-	return { state, pointer: nextStepBlock(goal, settings, contextUsage) };
+	return [fixed, instructions, limits, "Usage spans goal turns, not context. Latest snapshot supersedes earlier snapshots."].filter(Boolean).join("\n");
+}
+
+/**
+ * The complete request-only block: policy first, pointer last. One block is
+ * cheaper than a pinned policy plus a replaced pointer whenever a request adds
+ * more tokens than the policy holds, because pinning it costs a re-read of
+ * everything between the old anchor and the tail.
+ */
+export function goalPromptBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
+	return `${policyText(goal, settings)}\n${nextStepBlock(goal, settings, contextUsage)}`;
+}
+
+/** The block split for callers that need the parts separately (tests, reports). */
+export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; pointer: string } {
+	return { state: policyText(goal, settings), pointer: nextStepBlock(goal, settings, contextUsage) };
 }
 
 /** The open step a focused task stands for: its first open child, recursively. */

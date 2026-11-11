@@ -81,9 +81,10 @@ for (const fixtureId of expectedFixtureIds) {
 	if (captured.extensionSystem) failures.push(`${fixtureId}: goal state must not enter the system prefix`);
 	const liveState = captured.messages.filter(m => m.customType === "pi-goal-live-context");
 	const active = liveState[0]?.content?.includes("[PI GOAL ACTIVE goalId=");
-	const expectedTails = active ? 2 : 1;
-	if (liveState.length && (liveState.length !== expectedTails || liveState.some((m, i) => captured.messages.at(-expectedTails + i) !== m))) failures.push(`${fixtureId}: current policy and optional pointer must occur once at the tail`);
-	if (active && !liveState[1]?.content?.startsWith("[PI GOAL NOW ")) failures.push(`${fixtureId}: next-step pointer missing`);
+	// One block carries the policy and the pointer: it must appear exactly once and
+	// sit last, so the model reads the current step at the end of the request.
+	if (liveState.length && (liveState.length !== 1 || captured.messages.at(-1) !== liveState[0])) failures.push(`${fixtureId}: the live block must occur exactly once at the tail`);
+	if (active && !liveState[0]?.content?.includes("\n[PI GOAL NOW ")) failures.push(`${fixtureId}: next-step pointer missing`);
 	const liveText = liveState[0]?.content ?? "";
 
 	// Required single-source markers on active-goal fixtures whose turn was

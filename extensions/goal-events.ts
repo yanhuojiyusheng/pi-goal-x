@@ -105,10 +105,11 @@ export function registerGoalEvents(core: GoalCore): void {
 		if (sessionKey === "unidentified") liveRetention.clear(sessionKey);
 		const parts = currentGoalContextParts(ctx);
 		if (parts) {
-			// Retain the policy block verbatim at its anchor so this request extends
-			// the previous one instead of displacing it; the pointer is replaced at
-			// the tail. Only genuinely new text is appended.
-			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, pointer: parts.pointer, window: loadGoalSettings(ctx.cwd).stateReanchorRequests });
+			// One replaced block at the tail: policy text followed by the pointer. The
+			// model reads the current step last, and nothing carries over between
+			// requests, so the block is always safe to drop and re-emit.
+			const block = parts.pointer === undefined ? parts.state : `${parts.state}\n${parts.pointer}`;
+			const { messages: retained } = liveRetention.apply(sessionKey, base, { block });
 			return retained;
 		}
 		liveRetention.clear(sessionKey);
@@ -452,8 +453,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	/** Request-only state: no live goal block, focus, or reminders enter the system prefix. */
-	/** Request-only goal state split into a rarely-changing policy block and a per-request pointer. Other branches are stable-only. */
-	function currentGoalContextParts(ctx: ExtensionContext): { state: string; pointer?: string } | undefined {
+	/** Request-only goal state split into a rarely-changing policy block and a per-request pointer. Other branches are stable-only. */	function currentGoalContextParts(ctx: ExtensionContext): { state: string; pointer?: string } | undefined {
 		const checkpoint = core.runtime.getCheckpointGoalId();
 		if (checkpoint !== null && (core.scheduler.isDenied() || !core.isActionableContinuationGoal(checkpoint))) {
 			return { state: staleContinuationPrompt(checkpoint, core.state.goal) };

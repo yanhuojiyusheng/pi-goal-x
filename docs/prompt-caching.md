@@ -6,7 +6,7 @@ The request layout is:
 
 1. Host system prompt and tool schemas.
 2. Conversation history, with each goal checkpoint normalized to a tiny, stable trigger in its original position.
-3. Request-only goal policy plus the next-step pointer that carries the open step (the deepest pending task, named by id and title so a nested plan needs no phase line), that step's completion contract, the next task and the usage header. The policy block is replayed at a verified history anchor; the pointer is replaced at the tail on every request.
+3. One request-only block carrying the goal policy (objective, tasks, lifecycle rules, limits, scheduling state and applicable reminders) followed by the next-step pointer: the open step (the deepest pending task, named by id and title so a nested plan needs no phase line), the next task, progress, and the usage header. It is rebuilt from the goal and appended at the tail on every request, so the model always reads the current step last.
 
 Changing goal state never rewrites the system prompt or historical messages. The full goal-state message is not persisted into the session. Old checkpoints remain until Pi compacts history; retaining small markers avoids shifting the prefix on every continuation. Display-only auditor messages are consistently excluded, and tool calls stay adjacent to their results.
 
@@ -24,7 +24,9 @@ Validation includes consecutive request-prefix regressions; actual Anthropic, An
 
 Provider references: [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) describes exact-prefix matching and explicit breakpoints; [DeepSeek context caching](https://api-docs.deepseek.com/guides/kv_cache/) describes its automatic prefix cache and usage counters.
 
-Active requests split two request-only blocks with opposite needs. The policy block (objective, tasks, lifecycle rules, limits, scheduling state and applicable recovery/auditor reminders) is large and stable, so it is retained verbatim at a verified history anchor and re-anchored once per `stateReanchorRequests` requests that carry fresh content (default 128; `0` keeps the first anchor for the session). The pointer block (current task, its contract, the next task, progress, and the usage header) must be read last, so it is replaced rather than accumulated: each request drops the previous copy and appends the current one at the tail. An identical request adds nothing and stays byte-identical, which keeps retries warm.
+Active requests inject a single block at the tail and keep nothing between requests. Pinning part of it costs more than re-sending it: on the request that moves a pin, everything accumulated since the old anchor is re-read, and that distance grows with the lifetime of the pin, while a re-emitted block only ever costs the block. The break-even is the block's own size — holding pays only when a request adds less text than the block carries, which a tool loop never does. Because nothing is retained, an identical retry stays byte-identical and rewrites of history need no repair.
+
+`stateReanchorRequests` is still accepted and persisted, but it no longer changes behavior: a single replaced block has nothing to re-anchor.
 
 ### Why the pointer moves on every request
 

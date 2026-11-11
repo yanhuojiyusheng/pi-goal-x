@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 // @ts-expect-error Shared JavaScript experiment entry point.
-import { summarize, compareReports, investigateCache } from "../experiments/context/cache-compare.mjs";
+import { summarize, compareReports, investigateCache, mergedBlock } from "../experiments/context/cache-compare.mjs";
 
 const report = () => ({version: 1, rows: [{id: "fixture", ...summarize({messages: [{role: "system", content: "policy"}, {role: "user", content: "history"}], tools: [{name: "read", parameters: {type: "object"}}], prompt_cache_key: "fixed"})}]});
 
@@ -26,7 +26,10 @@ test("cache comparison rejects missing scenarios, early text, schemas, options, 
 
 test("state-change measurement reproduces #108 and rejects extra or unexplained resets", () => {
  const investigation = investigateCache();
- assert.equal(investigation.stateChanges.filter((step: any) => step.prefixBreak).length, 4);
+ // A merged block is re-emitted whenever the request adds text, so every step
+ // breaks the prefix; a split tree only breaks when the goal itself moves.
+ const expectedBreaks = mergedBlock() ? investigation.stateChanges.length : 4;
+ assert.equal(investigation.stateChanges.filter((step: any) => step.prefixBreak).length, expectedBreaks);
  assert.equal(investigation.occupancy[1].changedRequests, 0);
  assert.equal(investigation.occupancy[1].breaks, 0);
  assert.ok(investigation.occupancy[1].totalRequestBytes < investigation.occupancy[0].totalRequestBytes);
