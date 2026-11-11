@@ -1,5 +1,9 @@
 # Technical plan
 
+## Per-agent-run retention (2026-11-11)
+
+Retain the first block and an immutable fingerprint of the preceding history per session/model; insert the same block at that boundary on subsequent requests. Reset at `agent_end`, so the next request constructs a new block. Re-anchor if preceding history changes, or if the boundary would split a tool-call batch. Clear state on deactivation and session teardown. Test stable prefix, refresh, history edits, and tool boundaries; actual GPT caching remains to be measured.
+
 ## Implementation plan: approved compact block (2026-11-11)
 
 1. Add failing prompt regressions for a single ACTIVE header, fresh cumulative usage,

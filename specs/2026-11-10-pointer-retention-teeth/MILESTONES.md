@@ -326,3 +326,9 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
   suite passed again: 1,309/1,309 in about 45.7 seconds
   (`/tmp/goal-compact-before-commit.log`). Pi's configured local package resolves to
   this source checkout; its TypeScript entry needs `/reload`, with no build step.
+
+## 2026-11-11 — per-run goal snapshot
+
+- Retain the first request-only goal block at its original history position until agent_end; the next run captures fresh task and usage state. Re-anchor on history rewrites or unsafe tool-result boundaries, and refresh immediately for lifecycle transitions and newly appearing urgent reminders.
+- Updated retention, lifecycle, usage and SDK serialization regressions and the shared cache gate; the archived release remains the comparison baseline. The first full-suite run exposed outdated tail-position assertions in the SDK worker; updated them to assert the complete prefix and next-run refresh.
+- Validation: unit suite 1245 passed; lint, type check, context gate, and cache gate passed (408 adapter scenarios, 1000 transitions). The SDK worker passed all 9 cases after updating its assertions. These captures stop before dispatch; actual GPT cache-hit improvement has not been measured.

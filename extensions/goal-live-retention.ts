@@ -1,22 +1,9 @@
-/**
- * Request-only goal state: one block, appended at the tail of every provider
- * request and never persisted.
- *
- * The block holds the policy text (objective, rules, task tree) followed by the
- * task/usage header and any fallback guidance. Keeping them in one message is
- * deliberate: a request in a tool loop adds far more tokens than the
- * block holds, so re-emitting the block costs less than pinning any part of it —
- * a pin makes the next change re-read everything between the old anchor and the
- * tail, and that distance grows with how long the pin lives.
- *
- * Nothing is retained between requests, so history rewrites, compaction,
- * resumes and tool-call ordering need no special handling: the block is always
- * rebuilt from the goal and always lands last.
- */
+/** Request-only goal state retained at its first position for one agent run. */
+import { createHash } from "node:crypto";
 
 export const LIVE_CONTEXT_TYPE = "pi-goal-live-context";
 
-/** A request-only tail message. Never persisted; the hook appends it per request. */
+/** A request-only message. Never persisted; retained during an agent run. */
 export interface LiveMessage {
 	role: "custom";
 	customType: typeof LIVE_CONTEXT_TYPE;
@@ -51,8 +38,7 @@ function makeLiveMessage(content: string): LiveMessage {
 }
 
 export class LiveTailRetention {
-	/** Last block per session, only so `contents()` can report what is injected. */
-	private readonly blocks = new Map<string, string>();
+	private readonly blocks = new Map<string, { block: string; length: number; fingerprint: string }>();
 
 	apply<T>(sessionKey: string, base: readonly T[], fresh: FreshLiveBlock | null): { messages: Array<T | LiveMessage>; transientContents: string[] } {
 		if (fresh === null) {
@@ -63,13 +49,21 @@ export class LiveTailRetention {
 			const oldest = this.blocks.keys().next();
 			if (!oldest.done) this.blocks.delete(oldest.value);
 		}
-		this.blocks.set(sessionKey, fresh.block);
-		return { messages: [...base, makeLiveMessage(fresh.block)], transientContents: [fresh.block] };
+		const fingerprint = (messages: readonly T[]) => createHash("sha256").update(JSON.stringify(messages)).digest("hex");
+		let retained = this.blocks.get(sessionKey);
+		const nextRole = retained && (base[retained.length] as { role?: string } | undefined)?.role;
+		if (!retained || retained.length === 0 || retained.length > base.length ||
+			fingerprint(base.slice(0, retained.length)) !== retained.fingerprint ||
+			(nextRole !== undefined && ["toolResult", "tool", "tool_result"].includes(nextRole))) {
+			retained = { block: fresh.block, length: base.length, fingerprint: fingerprint(base) };
+			this.blocks.set(sessionKey, retained);
+		}
+		return { messages: [...base.slice(0, retained.length), makeLiveMessage(retained.block), ...base.slice(retained.length)], transientContents: [retained.block] };
 	}
 
 	contents(sessionKey: string): string[] | undefined {
 		const block = this.blocks.get(sessionKey);
-		return block === undefined ? undefined : [block];
+		return block === undefined ? undefined : [block.block];
 	}
 
 	clear(sessionKey?: string): void {

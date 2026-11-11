@@ -809,26 +809,24 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  const toolResult = {role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{type: "text", text: "file contents"}], isError: false, timestamp: 3};
  history.push(toolCall, toolResult);
  const second = await request();
- assert.deepEqual(second.slice(0, first.length - 1), first.slice(0, -1), "history grows as usual; the block moves to the new tail");
- assert.deepEqual(second.slice(1, 3), [toolCall, toolResult], "tool call and result stay adjacent");
- assert.match(second.at(-1).content, /PI GOAL ACTIVE/);
- assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 1, "the block is replaced, never accumulated");
- assert.match(second.at(-1).content, /12345 tokens/, "usage is refreshed in the first ACTIVE header");
- assert.ok(!JSON.stringify(second).includes("Autonomous runs"), "an unlimited allowance reports no runs line");
- // An objective edit changes the stable policy block: retention resets once so no
- // stale objective lingers mid-history, and the fresh pair anchors the new prefix.
+ assert.deepEqual(second.slice(0, first.length), first, "the first request remains an unchanged prefix");
+ assert.deepEqual(second.slice(2, 4), [toolCall, toolResult], "tool call and result stay adjacent");
+ assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
+ assert.doesNotMatch(second[1].content, /12345 tokens/, "usage waits until the agent stops");
+ await h.handlers.agent_end!({messages: []}, h.ctx);
  h.core.state.goal!.objective = "Changed objective";
  const third = await request();
  assert.equal(third.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
  assert.deepEqual(third.slice(0, 3), history);
  assert.match(third.at(-1).content, /Changed objective/);
+ assert.match(third.at(-1).content, /12345 tokens/);
  assert.match(third.at(-1).content, /^\[PI GOAL ACTIVE/);
  assert.doesNotMatch(third.at(-1).content, /PI GOAL NOW/);
  h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
  for (let i = 0; i < 4; i++) {
   history.push({role: "custom", customType: "pi-goal-event", content: "legacy full prompt", details: {goalId: h.core.state.goal!.id, kind: "checkpoint"}, timestamp: i + 4});
   const current = await request();
-  assert.deepEqual(current.slice(0, third.length - 1), third.slice(0, -1));
+  assert.deepEqual(current.slice(0, third.length), third);
   assert.equal(current.filter((m: any) => m.customType === "pi-goal-live-context").length, 1, "one block per request, never duplicated");
   const before = current.slice(0, -1);
   const again = await request();
@@ -868,6 +866,7 @@ test("prompt cache: cleared scheduling instructions vanish from retained history
 	assert.ok(first.some((m: any) => typeof m.content === "string" && m.content.includes("Publish release v1")), "standing instruction rides the live state");
 	// Cleared by omission: a plain scheduler with no decision must not re-issue the order.
 	h.core.state.goal!.scheduler = {...newGoalScheduler("owner"), used: 1};
+	await h.handlers.agent_end!({messages: []}, h.ctx);
 	const advanced = [...history, {role: "assistant", content: "ack", timestamp: 2}];
 	const second: any[] = (await h.handlers.context_with_system!({messages: advanced}, h.ctx)).messages;
 	assert.ok(!second.some((m: any) => typeof m.content === "string" && m.content.includes("Publish release v1")), "no retained tail re-issues the cancelled order");

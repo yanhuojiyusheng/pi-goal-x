@@ -105,10 +105,15 @@ export function registerGoalEvents(core: GoalCore): void {
 		if (sessionKey === "unidentified") liveRetention.clear(sessionKey);
 		const parts = currentGoalContextParts(ctx);
 		if (parts) {
-			// One replaced block at the tail: policy text followed by the pointer. The
-			// model reads the current step last, and nothing carries over between
-			// requests, so the block is always safe to drop and re-emit.
+			// Keep one snapshot at its first position during the agent run.
+			// Lifecycle transitions and one-shot warnings must not be hidden.
 			const block = parts.pointer === undefined ? parts.state : `${parts.state}\n${parts.pointer}`;
+			const previous = liveRetention.contents(sessionKey)?.[0];
+			const identity = (text: string) => text.match(/^\[PI GOAL (?:ACTIVE|PAUSED|BLOCKED|BUDGET LIMITED) goalId=[^\]\s]+/)?.[0];
+			if (previous && (identity(previous) !== identity(block) ||
+				["[POST-COMPACTION RESYNC", "[GOAL STALLED", "[AUDITOR REJECTION", "[TOKEN BUDGET REACHED"].some(marker => block.includes(marker) && !previous.includes(marker)))) {
+				liveRetention.clear(sessionKey);
+			}
 			const { messages: retained } = liveRetention.apply(sessionKey, base, { block });
 			return retained;
 		}
@@ -452,8 +457,8 @@ export function registerGoalEvents(core: GoalCore): void {
 		core.runningGoalId = core.state.goal?.status === "active" ? core.state.goal.id : null;
 	});
 
-	/** Request-only state: no live goal block, focus, or reminders enter the system prefix. */
-	/** Request-only goal state split into a rarely-changing policy block and a per-request pointer. Other branches are stable-only. */	function currentGoalContextParts(ctx: ExtensionContext): { state: string; pointer?: string } | undefined {
+	/** Build request-only goal state, including any urgent reminders. */
+	function currentGoalContextParts(ctx: ExtensionContext): { state: string; pointer?: string } | undefined {
 		const checkpoint = core.runtime.getCheckpointGoalId();
 		if (checkpoint !== null && (core.scheduler.isDenied() || !core.isActionableContinuationGoal(checkpoint))) {
 			return { state: staleContinuationPrompt(checkpoint, core.state.goal) };
@@ -556,6 +561,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	}
 
 	pi.on("agent_end", async (event, ctx) => {
+		if (!ctx || !contexts.has(ctx) || contexts.get(ctx) === session) liveRetention.clear(sessionKeyFor(ctx));
 		const endedGoalId = core.runningGoalId;
 		core.runningGoalId = null;
 		continuationAfterSettleFor = null;

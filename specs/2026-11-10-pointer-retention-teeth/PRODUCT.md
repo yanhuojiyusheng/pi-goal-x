@@ -4,6 +4,10 @@ Status: in progress
 
 Branch: `feat/long-goal-drift-guards` (10 commits ahead of `main` at `b0fc15e`, 0.34.1; 21 files, +680/−357)
 
+## Update: hold the active block for one agent run (2026-11-11)
+
+Keep the first request's active block and its position unchanged through the same agent run, including tool calls. After the agent stops, refresh it on the next run. This trades immediate updates to usage and task state for a stable request prefix. If history is rewritten or compacted, safely re-anchor the block; do not split tool calls from results. Goal deactivation clears the block. Actual provider cache-hit improvement requires live measurement.
+
 ## Approved update: one compact active block (2026-11-11)
 
 This update supersedes the shorter-pointer experiment and historical split-block design below.

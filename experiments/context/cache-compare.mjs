@@ -221,20 +221,21 @@ export function compareReports(baseline, candidate) {
   if(candidate.corpus.retentionModel==='merged') {
    assert.equal(candidate.corpus.maxRetainedMessages,1,'a merged block must ride as exactly one tail');
    assert.ok(candidate.corpus.maxRetainedBytes<=4096,`retained bytes grew to ${candidate.corpus.maxRetainedBytes}`);
-   assert.equal(candidate.corpus.pointerReplacements,candidate.corpus.transitions-1,'the merged block must be re-emitted on every change');
+   assert.equal(candidate.corpus.pointerReplacements,0,'the snapshot must stay fixed throughout the run');
+   assert.equal(candidate.corpus.breaks,0,'advancing history must preserve the snapshot prefix');
   } else {
    assert.ok(candidate.corpus.maxRetainedMessages<=2,`retained block count grew to ${candidate.corpus.maxRetainedMessages}`);
    assert.ok(candidate.corpus.maxRetainedBytes<=2048,`retained bytes grew to ${candidate.corpus.maxRetainedBytes}`);
    assert.equal(candidate.corpus.pointerReplacements,candidate.corpus.transitions-1,'the pointer must be replaced on every fresh request');
    assert.ok(candidate.corpus.policyAnchorMoves<=Math.ceil(candidate.corpus.transitions/Math.max(reanchorWindow(),1))+1,`policy re-anchored ${candidate.corpus.policyAnchorMoves} times`);
   }
-  assert.ok(candidate.corpus.breaks>0,'advancing history must move at least one retained block');
+  if(candidate.corpus.retentionModel!=='merged') assert.ok(candidate.corpus.breaks>0,'legacy advancing history must move at least one retained block');
  }
  if(baseline.dependencies) assert.equal(candidate.dependencies,baseline.dependencies,'comparison dependencies differ');
  if(baseline.investigation) {
   // The classification itself is model-specific: a released tree reuses until the
   // goal moves, a merged tree re-emits on every changed request.
-  if(mergedBlock()) assert.ok(candidate.investigation.stateChanges.every(step=>step.prefixBreak),'the merged block must be re-emitted on every changed request');
+  if(mergedBlock()) assert.ok(candidate.investigation.stateChanges.every(step=>!step.prefixBreak),'the block must stay fixed within an agent run');
   else assert.deepEqual(candidate.investigation.stateChanges.map(({kind,prefixBreak})=>({kind,prefixBreak})),baseline.investigation.stateChanges.map(({kind,prefixBreak})=>({kind,prefixBreak})),'state reset classification changed');
   assert.equal(candidate.investigation.occupancy[1].breaks,0,'hidden occupancy invalidated retention');
   assert.equal(candidate.investigation.occupancy[1].changedRequests,0,'hidden occupancy changed the request');
@@ -279,7 +280,6 @@ export function compareReports(baseline, candidate) {
    }
    assert.equal(aLive.length,2,`${b.id}: release must carry a policy block and a counter block`);
    assert.equal(bLive.length,1,`${b.id}: a merged tree must emit exactly one live block`);
-   assert.equal(b.blocks.at(-1).hash,bLive[0].hash,`${b.id}: the merged block must ride at the tail`);
    const policyText=blockText(aLive[0].raw), countersText=blockText(aLive[1].raw), mergedText=blockText(bLive[0].raw);
    const replacement=countersText===undefined?undefined:replaceWithPointer(countersText);
    assert.ok(policyText!==undefined&&countersText!==undefined&&replacement!==undefined&&mergedText!==undefined,`${b.id}: the merged block must carry readable text`);
@@ -347,11 +347,11 @@ export function investigateCache() {
   const prefixBreak=shared!==previous.length;
   // A merged tree re-emits its single block on every changed request, so any fresh
   // text breaks the prefix; a split tree only loses the prefix when the goal moves.
-  assert.equal(prefixBreak,mergedBlock()?true:kind!=='work',`${kind}: unexplained reset/reuse`);
+  assert.equal(prefixBreak,mergedBlock()?false:kind!=='work',`${kind}: unexplained reset/reuse`);
   stateChanges.push({kind,prefixBreak,reusableBlocks:shared,suffixMessages:previous.length-shared,reusableBytes:Buffer.byteLength(JSON.stringify(previous.slice(0,shared))),requestBytes:Buffer.byteLength(JSON.stringify(next))});
   previous=next;
  }
- assert.equal(stateChanges.filter(step=>step.prefixBreak).length,mergedBlock()?stateChanges.length:4);
+ assert.equal(stateChanges.filter(step=>step.prefixBreak).length,mergedBlock()?0:4);
  const occupancy=[];
  for(const showContextUsage of [true,false]) {
   const retained=new LiveTailRetention();

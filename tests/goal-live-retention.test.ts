@@ -6,14 +6,24 @@ const msg = (role: string, content: string, timestamp: number): any => ({ role, 
 const contents = (messages: any[]): string[] => messages.map(message => message.content);
 const live = (messages: any[]): string[] => messages.filter(m => m.customType === "pi-goal-live-context").map(m => m.content);
 
-test("the block is replaced at the tail on every request", () => {
+test("a run retains the initial block and its position until explicitly cleared", () => {
+	const retention = new LiveTailRetention();
+	const first = [msg("user", "start", 1)];
+	assert.deepEqual(contents(retention.apply("s", first, { block: "B1" }).messages), ["start", "B1"]);
+	const next = [...first, msg("assistant", "work", 2), msg("toolResult", "result", 3)];
+	assert.deepEqual(contents(retention.apply("s", next, { block: "B2" }).messages), ["start", "B1", "work", "result"]);
+	retention.clear("s");
+	assert.deepEqual(contents(retention.apply("s", next, { block: "B3" }).messages), ["start", "work", "result", "B3"]);
+});
+
+test("the block remains at its initial position during a run", () => {
 	const retention = new LiveTailRetention();
 	const base1 = [msg("user", "h", 1)];
 	assert.deepEqual(contents(retention.apply("s", base1, { block: "B1" }).messages), ["h", "B1"]);
 	const base2 = [...base1, msg("assistant", "a", 2)];
-	assert.deepEqual(contents(retention.apply("s", base2, { block: "B2" }).messages), ["h", "a", "B2"]);
+	assert.deepEqual(contents(retention.apply("s", base2, { block: "B2" }).messages), ["h", "B1", "a"]);
 	const base3 = [...base2, msg("assistant", "b", 3)];
-	assert.deepEqual(contents(retention.apply("s", base3, { block: "B3" }).messages), ["h", "a", "b", "B3"]);
+	assert.deepEqual(contents(retention.apply("s", base3, { block: "B3" }).messages), ["h", "B1", "a", "b"]);
 });
 
 test("only one copy of the block is ever retained", () => {
@@ -25,8 +35,8 @@ test("only one copy of the block is ever retained", () => {
 		out = retention.apply("s", base, { block: `B${i}` }).messages;
 	}
 	assert.equal(live(out).length, 1, "stale copies are dropped, never accumulated");
-	assert.equal(out.at(-1).content, "B9", "the newest block rides at the tail");
-	assert.deepEqual(retention.contents("s"), ["B9"]);
+	assert.equal(live(out)[0], "B0", "the first block remains unchanged");
+	assert.deepEqual(retention.contents("s"), ["B0"]);
 });
 
 test("the same request always renders the same messages", () => {
@@ -37,7 +47,7 @@ test("the same request always renders the same messages", () => {
 	assert.deepEqual(retention.apply("s", base, fresh).messages, first.messages, "an identical retry must stay byte-identical");
 	const advanced = [...base, msg("assistant", "a", 2)];
 	const third = retention.apply("s", advanced, fresh).messages;
-	assert.deepEqual(contents(third), ["h", "a", "B"], "the block follows the newest message, never an old anchor");
+	assert.deepEqual(contents(third), ["h", "B", "a"], "the original anchor stays fixed");
 });
 
 test("rewritten history resets once and never loses the live state", () => {
@@ -47,21 +57,21 @@ test("rewritten history resets once and never loses the live state", () => {
 	assert.deepEqual(contents(next.messages), ["compacted summary", "B1"]);
 });
 
-test("a changed block drops the previous copy and starts a fresh tail", () => {
+test("a changed block waits for the next run", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
 	retention.apply("s", base, { block: "B1" });
-	assert.deepEqual(contents(retention.apply("s", base, { block: "B2" }).messages), ["h", "B2"]);
+	assert.deepEqual(contents(retention.apply("s", base, { block: "B2" }).messages), ["h", "B1"]);
 });
 
-test("the block follows the tail for a thousand changing requests", () => {
+test("the block stays anchored for a thousand changing requests", () => {
 	const retention = new LiveTailRetention();
 	const base: unknown[] = [{ role: "user", content: "start" }];
 	for (let i = 0; i < 1000; i++) {
 		base.push({ role: "assistant", content: `turn ${i}` });
 		const out = retention.apply("s", base, { block: `B${i}: ${"x".repeat(180)}` });
 		assert.equal(live(out.messages as any[]).length, 1, "exactly one block per request");
-		assert.equal((out.messages.at(-1) as { content: string }).content, `B${i}: ${"x".repeat(180)}`);
+		assert.equal(live(out.messages as any[])[0], `B0: ${"x".repeat(180)}`);
 		assert.equal((out.messages as any[]).length, base.length + 1, "the block never displaces history");
 	}
 });
@@ -90,7 +100,7 @@ test("transient contents cover retained and fresh blocks for marker relocation",
 	const base = [msg("user", "h", 1)];
 	retention.apply("s", base, { block: "B1" });
 	const advanced = [...base, msg("assistant", "a", 2)];
-	assert.deepEqual(retention.apply("s", advanced, { block: "B2" }).transientContents, ["B2"]);
+	assert.deepEqual(retention.apply("s", advanced, { block: "B2" }).transientContents, ["B1"]);
 });
 
 test("a retained block never splits a tool-call batch when history diverges", () => {

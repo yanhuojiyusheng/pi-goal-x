@@ -55,10 +55,8 @@ export async function buildReport({blockBound=2}={}) {
        const count=prefix(previous.blocks,current.blocks);
        // Explicit marker movement is covered separately; raw bytes stay recorded.
        current.reuse={blocks:count,bytes:previous.blocks.slice(0,count).reduce((s,b)=>s+b.bytes,0)};
-       // A merged block moves to the tail every request, so the shared prefix is
-       // everything the previous request had except that block; a split tree keeps
-       // its pinned policy block and shares one more.
-       const expectedShared=mergedBlock()?previous.blocks.length-1:previous.blocks.length;
+       // The retained block and all earlier history remain in the next request.
+       const expectedShared=previous.blocks.length;
        if(flavor.startsWith('openai')) assert.equal(count,expectedShared,'unchanged-policy prefix lost');
       }
       const retry=await serialize(`retry-${n}`,captured,await capture.runContext(base));
@@ -103,7 +101,8 @@ export async function buildReport({blockBound=2}={}) {
    // the corpus measures nothing.
    history.push(userMessage(`turn ${n}`));
   }
-  assert.ok(policyAnchorMoves>0,'advancing history must move the anchored policy block');
+  if(mergedBlock()) assert.equal(policyAnchorMoves,0,'the snapshot must remain anchored during the run');
+  else assert.ok(policyAnchorMoves>0,'legacy advancing history must move the anchored policy block');
   let source='archived-release';
   try {source=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();} catch { /* Gate assigns the pinned archive SHA. */ }
   const lockfile=readFileSync(path.join(root,'package-lock.json'));

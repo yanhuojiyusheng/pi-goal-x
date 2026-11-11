@@ -13,11 +13,8 @@ import {mutateSettingsLayer} from "../extensions/goal-settings.ts";
 
 const live = "[PI GOAL ACTIVE goalId=fixture]\nUsage: 123 tokens";
 
-// Retention replaces the next-step pointer at the tail instead of accumulating
-// copies, so a request's reusable prefix ends just before that one block. Every
-// prefix assertion states that boundary explicitly.
+// Helpers for checks that deliberately exclude the last serialized message.
 const reusablePrefix = (conversation: any[]) => conversation.slice(0, -1);
-const pointer = (conversation: any[]) => conversation.slice(-1);
 // A request's reusable prefix must extend the previous one verbatim.
 const assertExtends = (next: any[], previous: any[]) => assert.deepEqual(next.slice(0, previous.length), previous);
 const stripContextLine = (block: any) => JSON.parse(JSON.stringify(block, (_key, value) => typeof value === "string" ? value.replace(/\nContext snapshot: [^\n]*$/, "") : value));
@@ -111,8 +108,7 @@ for (const flavor of ["anthropic-messages", "openai-completions", "openai-respon
  });
 }
 
-// Advancing-history regression: a single live block follows real history. Advancing turns extend only the
-// history prefix; the goal block is replaced at the new tail on every request.
+// Advancing-history regression: one live snapshot stays fixed throughout an agent run.
 // These assertions concern serialized payload construction, not provider hits.
 for (const flavor of ["openai-completions", "openai-responses"] as const) {
 	test(`real ${flavor} serialization keeps an advancing prefix across assistant turns`, async () => {
@@ -150,11 +146,11 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			assertExtends(reusablePrefix(b), reusablePrefix(a));
 			assertExtends(reusablePrefix(c), reusablePrefix(b));
 			assert.equal(reusablePrefix(c).length - reusablePrefix(b).length, 1, "the second advance adds only its own completed turn");
-			assert.equal(JSON.stringify(pointer(a)).split("Objective: hold the line").length - 1, 1);
-			assert.equal(JSON.stringify(pointer(b)).split("Objective: hold the line").length - 1, 1, "one fresh goal block carries the policy at the tail");
-			assert.ok(!JSON.stringify(reusablePrefix(b)).includes("Objective: hold the line"), "goal policy is never persisted into real history");
-			assert.ok(JSON.stringify(pointer(b)).includes("Usage: 200 tokens"), "the current pointer is the last block");
-			assert.ok(!JSON.stringify(reusablePrefix(b)).includes("Usage: 100 tokens"), "the replaced pointer leaves no copy behind");
+			assertExtends(b, a);
+			assertExtends(c, b);
+			assert.equal(JSON.stringify(b).split("Objective: hold the line").length - 1, 1, "one retained goal block carries the policy");
+			assert.ok(JSON.stringify(b).includes("Usage: 100 tokens"), "the first snapshot stays in the growing request");
+			assert.ok(!JSON.stringify(b).includes("Usage: 200 tokens"), "updated usage waits until the next run");
 			// Only completed turns grow history; the live block remains a single tail.
 			assert.equal(c.length - a.length, 2, "two completed turns add exactly two history messages");
 			// Real tool-loop history, including parallel calls/results, followed by
@@ -187,7 +183,8 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			const resultIndex = delayedWire.findIndex((m: any) => m.call_id === "delayed" && m.type === "function_call_output" || m.tool_call_id === "delayed");
 			assert.ok(callIndex >= 0);
 			assert.equal(resultIndex, callIndex + 1, "wire result stays adjacent to the delayed call");
-			// Policy edits and compaction reset retained state, while host/tools stay stable.
+			// A new agent run refreshes the snapshot; compaction also resets it.
+			retention.clear("advance-session");
 			const nextState = "[PI GOAL ACTIVE goalId=fixture]\nObjective: revised";
 			const edited = await capture(session, {block: `${nextState}\n${"Usage: 800 tokens"}`});
 			assert.ok(!JSON.stringify(conversation(edited)).includes("Objective: hold the line"));

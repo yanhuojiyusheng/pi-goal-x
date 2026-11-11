@@ -28,7 +28,7 @@ test("state-change measurement reproduces #108 and rejects extra or unexplained 
  const investigation = investigateCache();
  // A merged block is re-emitted whenever the request adds text, so every step
  // breaks the prefix; a split tree only breaks when the goal itself moves.
- const expectedBreaks = mergedBlock() ? investigation.stateChanges.length : 4;
+ const expectedBreaks = mergedBlock() ? 0 : 4;
  assert.equal(investigation.stateChanges.filter((step: any) => step.prefixBreak).length, expectedBreaks);
  assert.equal(investigation.occupancy[1].changedRequests, 0);
  assert.equal(investigation.occupancy[1].breaks, 0);

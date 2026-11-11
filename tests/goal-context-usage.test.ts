@@ -59,8 +59,8 @@ for (const mode of ["ordinary", "audit", "wait"]) test(`registered context toggl
    mutateSettingsLayer({scope: "project", cwd: h.cwd, mutation: {op: "set", path: ["showContextUsage"], value}});
    base.push({role: "assistant", content: "work", timestamp: base.length + 1});
    const next = await capture();
-   assert.deepEqual(next.slice(0, previous.length - 1), previous.slice(0, -1), "only the pointer moves; history and the policy block stay literal");
-   assert.equal(next.at(-1).content.includes("Context snapshot:"), value);
+   assert.deepEqual(next.slice(0, previous.length), previous, "the retained block and prior history stay fixed");
+   assert.equal(JSON.stringify(next).includes("Context snapshot:"), false, "display changes apply on the next run");
    assert.deepEqual(await capture(), next);
    previous = next;
   }
@@ -144,6 +144,7 @@ test("changing and removing budget or run limits clears historical policy", () =
 	retention.apply("s", base, { block: goalPromptBlock(goal, { maxAutonomousRuns: 10 }) });
 	delete goal.tokenBudget;
 	const block = goalPromptBlock(goal, {}, { tokens: 20, contextWindow: 1000 });
+	retention.clear("s"); // A new agent run refreshes the snapshot.
 	const out = retention.apply("s", [...base, { role: "assistant", content: "work" }], { block });
 	assert.equal(out.transientContents.length, 1);
 	assert.doesNotMatch(out.transientContents[0]!, /Limits:/);
