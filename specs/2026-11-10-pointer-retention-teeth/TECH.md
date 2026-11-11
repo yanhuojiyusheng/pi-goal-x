@@ -1,5 +1,17 @@
 # Technical plan
 
+## Experimental branch update: shorter task pointer
+
+On `experiment/merged-live-block`, `nextStepBlock` keeps its header and optional
+run/context lines, but emits no `Now:`, `Then:`, or `Progress:` body for a focused
+task. Keep the actionable task ID in the header and preserve no-current and
+no-task guidance. Remove the now-unused successor/path lookup. Do not change
+`taskListBlock`; its bounded list can omit the next step, and its `Current:` line
+can name a phase rather than the actionable child. Prompt and cache-gate tests
+must cover those limitations, header-only pointers, optional context, and intact
+fallback guidance. Re-measure the context baseline for the intentional deletion.
+The original split-block plan below remains as historical context.
+
 Implementation status: in progress (2026-11-10).
 
 Plan baseline: `feat/long-goal-drift-guards` @ `09926bf`, 10 commits ahead of `main` (`b0fc15e`,

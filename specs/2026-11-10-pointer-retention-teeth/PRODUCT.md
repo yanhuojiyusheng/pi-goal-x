@@ -4,6 +4,17 @@ Status: in progress
 
 Branch: `feat/long-goal-drift-guards` (10 commits ahead of `main` at `b0fc15e`, 0.34.1; 21 files, +680/−357)
 
+## Experiment: remove the three task summary lines
+
+On `experiment/merged-live-block`, when a task is current, remove the pointer's
+`Now:`, `Then:`, and `Progress:` lines. Keep its goal/task/usage header, optional
+run and context information, and the existing guidance for cases with no current
+or no task list. The state section still shows the focused task, pending task
+excerpts and progress. It can name a parent rather than its open child, and its
+bounded list does not always show the next task; this experiment accepts those
+visibility limits without changing the task-list layout. The sections below record
+the original split-block feature design, not the experimental retention layout.
+
 ## Why
 
 The branch replaces the accumulated `Goal snapshot:` counter tails with one replaced

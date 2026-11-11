@@ -3,8 +3,8 @@
  * request and never persisted.
  *
  * The block holds the policy text (objective, rules, task tree) followed by the
- * pointer (current step, what comes next, cumulative usage). Keeping them in one
- * message is deliberate: a request in a tool loop adds far more tokens than the
+ * task/usage header and any fallback guidance. Keeping them in one message is
+ * deliberate: a request in a tool loop adds far more tokens than the
  * block holds, so re-emitting the block costs less than pinning any part of it —
  * a pin makes the next change re-read everything between the old anchor and the
  * tail, and that distance grows with how long the pin lives.

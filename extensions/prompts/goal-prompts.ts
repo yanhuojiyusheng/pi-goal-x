@@ -268,59 +268,23 @@ function actionableTask(task: GoalTask): GoalTask {
 	}
 }
 
-function taskPath(tasks: readonly GoalTask[], id: string): GoalTask[] | undefined {
-	for (const task of tasks) {
-		if (task.id === id) return [task];
-		const found = task.subtasks && taskPath(task.subtasks, id);
-		if (found) return [task, ...found];
-	}
-	return undefined;
-}
-
 /**
- * The second injected block: what to do NOW and the step after it. It replaced
- * the usage snapshot, which sat at the end of the request — the position the
- * model reads last — and carried only token counts. Contracts stay out: they
- * are turn-stable, so the policy block already carries them, and repeating one
- * here made a single line the largest part of the block.
- *
- * "Now" is the deepest open step, named by id and title so a phased plan reads
- * as `p1.1.1 · Redis adapter`, not as its phase: a plan marks the phase current,
- * and the unit the model can actually work on is that phase's first open child.
- * Lightweight children are notes on their parent, so they never become the unit.
- *
- * The header carries the goal's cumulative usage. That looks like decoration and
- * is not: spending moves it, which makes the block differ on nearly every
- * request once it has spent something, so retention drops the previous copy and
- * appends a fresh one at the tail. Before the first token or second is spent the
- * header is stable and the block stays byte-identical. The pointer therefore
- * never drifts behind the newest turn. The policy block is what needs a window,
- * and retention re-anchors that one on its own request counter
- * (`MAX_STATE_REANCHOR_REQUESTS`); this block is replaced every request, so it
- * needs no window of its own.
+ * The final part of the request-only goal block. For a focused task the header
+ * identifies its deepest open step and carries cumulative usage; task details
+ * remain in the policy above. When no task is focused or no list exists, keep
+ * the instructions that tell the model how to proceed. Lightweight children
+ * are notes on their parent and do not become the actionable step.
  */
 
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
 	const usage = formatUsage(goal);
 	const header = (taskId?: string): string =>
 		`[PI GOAL NOW goalId=${goal.id}${taskId ? ` taskId=${taskId}` : ""}${usage ? ` ${usage}` : ""}]`;
-	const lines: string[] = [];
 	const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
 	const focused = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
 	const current = focused && actionableTask(focused);
-	if (index) lines.push(header(current?.id));
-	if (index && current) {
-		const path = taskPath(goal.taskList!.tasks, current.id) ?? [current];
-		const after = index.ordered.slice(index.ordered.findIndex(row => row.task.id === current.id) + 1);
-		// "None" must mean no pending task anywhere: a later sibling can be complete
-		// while an earlier pending step is still open, and the current task can itself
-		// still be pending, so both are excluded rather than assuming document order.
-		const pathIds = new Set(path.map(task => task.id));
-		const next = after.find(row => row.task.status === "pending")?.task ?? index.pending.find(task => !pathIds.has(task.id));
-		lines.push(`Now: ${current.id} · ${excerpt(current.title, 180, "tasks")}`);
-		lines.push(next ? `Then: ${next.id} · ${excerpt(next.title, 180, "tasks")}` : "Then: none — this is the last pending task");
-		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
-	} else if (index) {
+	const lines = [header(current?.id)];
+	if (index && !current) {
 		const first = index.pending[0];
 		const next = first && actionableTask(first);
 		lines.push("Now: no task is marked current.");
@@ -330,9 +294,7 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 			lines.push(`Start with the first pending task: ${next.id} · ${excerpt(next.title, 180, "tasks")}`);
 			lines.push(`Mark it current with update_goal_task({task_id:"${next.id}", status:"start"}).`);
 		}
-		lines.push(`Progress: ${index.complete}/${index.ordered.length}`);
-	} else {
-		lines.push(header());
+	} else if (!index) {
 		lines.push("Now: keep advancing the objective above.");
 		lines.push("When it is actually met, call update_goal({status:\"complete\"}) to request an independent audit.");
 	}

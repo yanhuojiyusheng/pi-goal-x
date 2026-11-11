@@ -81,45 +81,38 @@ const replaceWithPointer = value => {
 
 /**
  * The pointer's own grammar. Exactly one shape is accepted, line for line:
- *   - current task: `Now: …`, `Then: …`, `Progress: n/m`
- *   - pending task, none current: `Now: no task is marked current.`,
- *     `Start with the first pending task: …`,
- *     `Mark it current with update_goal_task({task_id:"…", status:"start"}).`,
- *     `Progress: n/m`
- *   - no task list: `Now: keep advancing the objective above.`,
- *     `When it is actually met, call update_goal({status:"complete"}) …`
- * A missing, reordered or extra body line is not approved; release-only
- * `Goal snapshot:`/`Autonomous runs:` lines must never survive, and a release
- * `Context snapshot:` line may be dropped (delta #1) or reproduced verbatim as
- * the last line, never rewritten.
+ *   - current task: header with taskId, no task-summary lines;
+ *   - none current: `Now: no task is marked current.`, optionally followed by
+ *     the first pending task and its `update_goal_task` example;
+ *   - no task list: guidance to advance the objective and request an audit.
+ * A missing, reordered or extra body line is not approved. A release context
+ * line may be dropped or reproduced verbatim as the last line, never rewritten.
  */
 const RELEASE_ONLY_LINE = /^(Goal snapshot|Autonomous runs):/;
-const NOW_LINE = /^Now: \S/;
-const THEN_LINE = /^Then: \S/;
-const PROGRESS_LINE = /^Progress: \d+\/\d+$/;
 const NO_CURRENT_LINE = "Now: no task is marked current.";
 const START_PENDING_LINE = /^Start with the first pending task: \S/;
 const MARK_CURRENT_LINE = /^Mark it current with update_goal_task\(\{task_id:"[^"]+", status:"start"\}\)\.$/;
 const NO_TASK_LINE = "Now: keep advancing the objective above.";
 const WHEN_MET_LINE = 'When it is actually met, call update_goal({status:"complete"}) to request an independent audit.';
 
-function pointerLinesOk(body) {
- const first=body[0];
- if(first===NO_CURRENT_LINE)
-  return body.length===4&&START_PENDING_LINE.test(body[1])&&MARK_CURRENT_LINE.test(body[2])&&PROGRESS_LINE.test(body[3]);
- if(first===NO_TASK_LINE) return body.length===2&&body[1]===WHEN_MET_LINE;
- if(!NOW_LINE.test(first)) return false;
- const rest=body.slice(1);
- return rest.length===2&&THEN_LINE.test(rest[0])&&PROGRESS_LINE.test(rest[1]);
+function pointerLinesOk(body,header) {
+ // Removing the closing bracket first avoids accepting an empty taskId at the
+ // end of a header; task ids may themselves contain spaces or brackets.
+ const hasTaskId=/\staskId=\S/.test(header.slice(0,-1));
+ if(body.length===0) return hasTaskId;
+ if(hasTaskId) return false;
+ if(body[0]===NO_CURRENT_LINE)
+  return body.length===1||(body.length===3&&START_PENDING_LINE.test(body[1])&&MARK_CURRENT_LINE.test(body[2]));
+ if(body[0]===NO_TASK_LINE) return body.length===2&&body[1]===WHEN_MET_LINE;
+ return false;
 }
 
 function pointerBodyOk(text,releaseContext) {
  const lines=text.split('\n');
  const contextLines=lines.filter(line=>line.startsWith('Context snapshot:'));
  const body=lines.slice(1).filter(line=>!line.startsWith('Context snapshot:'));
- if(body.length===0) return false;
  if(body.some(line=>RELEASE_ONLY_LINE.test(line))) return false;
- if(!pointerLinesOk(body)) return false;
+ if(!pointerLinesOk(body,lines[0])) return false;
  if(contextLines.length>1) return false;
  if(contextLines.length===1) {
   if(releaseContext===undefined) return false;

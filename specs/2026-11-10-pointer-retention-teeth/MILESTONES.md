@@ -259,3 +259,25 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
 - Deliberately kept for a separate decision: `stateReanchorRequests` is still parsed and
   persisted, and the settings row still renders it, because dropping a settings key is a
   user-visible break. It is documented as ignored (`docs/prompt-caching.md`, `README.md:121`).
+
+## 2026-11-11 — t10 (branch `experiment/merged-live-block`): remove task-summary lines
+
+- At the user's request, the focused-task tail no longer repeats `Now:`, `Then:`, or
+  `Progress:`. Its header still identifies the actionable task and carries usage; optional
+  run/context lines and the no-current/no-task instructions remain. `Progress:` is also
+  removed from the no-current case because the task list already carries the count.
+- The deletion accepts a visibility tradeoff: the task list shows at most three pending
+  excerpts and can omit the next task; a focused parent appears in `Current:` even when
+  the header identifies a child. Tests document both cases without changing the list.
+- Tightened cache-gate coverage for the header-only shape, missing task ID, unexpected
+  text, context-line preservation and the two fallback forms. Removed the unused task
+  path and successor lookup. Updated `docs/prompt-caching.md` and the retention comment.
+- Re-measured `experiments/context/baseline-main.json` under label
+  `0.34.1-focused-header-only` for this intentional prompt deletion: seven of 24 fixtures
+  changed. The `current-contracted-task` goal block fell from 2,568 to 2,345 characters;
+  six other fixtures fell by 14–16 characters. The token estimates are character-based.
+- Validation before the final additional edge-case assertions: `npm run check` passed;
+  45 focused prompt/cache/context tests passed; `npm run context:gate` passed all 24
+  fixtures, `npm run context:cache-gate` passed 408 adapter scenarios and 1,000 bounded
+  transitions, and `retention-check.mjs` passed. `npm test` passed 1,234 of 1,239 tests;
+  the same five `goal-widget.test.ts` terminal keyboard cases fail on the unchanged branch.

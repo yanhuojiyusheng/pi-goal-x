@@ -453,7 +453,7 @@ test("allowance configuration refreshes cached guidance without bloating disable
 	assert.match(zero, /0\/0 \(automatic continuation disabled\)/);
 });
 
-test("the closing block points at the current task, with usage as its clock", () => {
+test("the focused-task pointer keeps its header without repeating task summary lines", () => {
 	const goal = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
 	goal.usage = { tokensUsed: 987654, activeSeconds: 600 };
 	goal.taskList = {
@@ -465,58 +465,52 @@ test("the closing block points at the current task, with usage as its clock", ()
 		blockCompletion: false,
 	} as GoalTaskList;
 	goal.currentTaskId = "task-2";
-	const prompt = goalPrompt(goal);
-	assert.match(prompt, /\[PI GOAL NOW goalId=.* taskId=task-2 .*\]/);
-	assert.match(prompt, /Now: task-2 · Write the exporter/);
-	assert.doesNotMatch(prompt, /Done when:/, "the pointer leaves the contract to the policy block");
-	assert.match(prompt, /Then: task-3 · Document it/, "the pointer names the next task, not an earlier one");
-	assert.match(prompt, /\[PI GOAL NOW goalId=\S+ taskId=task-2 10m0s · 987654 tokens\]/, "the header carries usage; that is what re-anchors the pointer every request");
-	assert.doesNotMatch(prompt.slice(0, prompt.indexOf("[PI GOAL NOW")), /987654/, "usage never enters the stable policy block");
+	const { state, pointer } = goalPromptParts(goal);
+	assert.equal(pointer, `[PI GOAL NOW goalId=${goal.id} taskId=task-2 10m0s · 987654 tokens]`);
+	assert.match(state, /\[TASK LIST — 1\/3 tasks complete\]/);
+	assert.match(state, /Current: task-2 · Write the exporter/);
+	assert.match(state, /Only filtered rows are exported/);
+	assert.match(state, /\[ \] task-3: Document it/);
+	assert.doesNotMatch(state, /987654/, "usage remains in the pointer header");
 
-	goal.currentTaskId = "task-3";
-	// task-2 is still pending even though it precedes task-3, so nothing is "none" yet.
-	assert.match(goalPrompt(goal), /Then: task-2 · Write the exporter/);
+	const withContext = goalPromptParts(goal, { maxAutonomousRuns: 4, showContextUsage: true }, { tokens: 40, contextWindow: 100 }).pointer;
+	assert.match(withContext, /Autonomous runs: 0\/4/);
+	assert.match(withContext, /Context snapshot: 40\/100 tokens \(40%\)/);
+	assert.doesNotMatch(withContext, /^(Now|Then|Progress):/m);
 
 	goal.currentTaskId = undefined;
-	assert.match(goalPrompt(goal), /Start with the first pending task: task-2 · Write the exporter/);
+	const noCurrent = goalPromptParts(goal).pointer;
+	assert.match(noCurrent, /Start with the first pending task: task-2 · Write the exporter/);
+	assert.match(noCurrent, /Mark it current with update_goal_task/);
+	assert.doesNotMatch(noCurrent, /^Progress:/m);
+	const allComplete = {
+		...goal,
+		taskList: { ...goal.taskList, tasks: goal.taskList.tasks.map(task => ({ ...task, status: "complete" as const })) },
+	};
+	assert.equal(goalPromptParts(allComplete).pointer, `[PI GOAL NOW goalId=${goal.id} 10m0s · 987654 tokens]\nNow: no task is marked current.`);
 
-	const noTasks = { ...goal, taskList: undefined, currentTaskId: undefined };
+	const noTasks = { ...goal, taskList: undefined };
 	assert.match(goalPrompt(noTasks), /keep advancing the objective above/);
 	assert.match(goalPrompt(goal, { disableTasks: true }), /keep advancing the objective above/);
 });
 
-test("the closing block still names an earlier pending task instead of claiming none remain", () => {
+test("bounded task lists can omit the next task without a separate pointer summary", () => {
 	const current = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
 	current.taskList = {
 		blockCompletion: false,
-		tasks: [
-			{ id: "task-1", title: "Investigate the failure", status: "pending" },
-			{ id: "task-2", title: "Ship the fix", status: "in_progress" },
-			{ id: "task-3", title: "Write the report", status: "complete" },
-		],
-	} as GoalTaskList;
-	current.currentTaskId = "task-2";
-	const pointer = goalPromptParts(current).pointer;
-	assert.match(pointer, /Then: task-1 · Investigate the failure/, "a pending task before the current one is still pending work");
-	assert.doesNotMatch(pointer, /Then: none/, "document order does not decide that nothing remains");
-
-	// The current task may itself still be pending; it must never be named as its own successor.
-	current.taskList = {
-		blockCompletion: false,
-		tasks: [
-			{ id: "task-1", title: "Investigate the failure", status: "pending" },
-			{ id: "task-2", title: "Ship the fix", status: "pending" },
-		],
-	} as GoalTaskList;
-	current.currentTaskId = "task-2";
-	assert.match(goalPromptParts(current).pointer, /Then: task-1 · Investigate the failure/);
-
-	// A lone open task still reads as the last pending task.
-	current.taskList = { blockCompletion: false, tasks: [{ id: "task-2", title: "Ship the fix", status: "in_progress" }] } as unknown as GoalTaskList;
-	assert.match(goalPromptParts(current).pointer, /Then: none — this is the last pending task/);
+		proposedAt: "2026-01-01T00:00:00.000Z",
+		tasks: Array.from({ length: 6 }, (_, i) => ({ id: `task-${i + 1}`, title: `Step ${i + 1}`, status: "pending" as const })),
+	};
+	current.currentTaskId = "task-5";
+	const { state, pointer } = goalPromptParts(current);
+	assert.match(state, /Current: task-5 · Step 5/);
+	assert.match(state, /\[ \] task-3: Step 3/);
+	assert.doesNotMatch(state, /\[ \] task-6: Step 6/, "only the first three pending tasks are shown");
+	assert.match(state, /additional pending tasks omitted/);
+	assert.equal(pointer, `[PI GOAL NOW goalId=${current.id} taskId=task-5]`);
 });
 
-test("the pointer never truncates task ids, only titles and contracts", () => {
+test("the pointer header and unfocused-task example keep task ids intact", () => {
 	const longId = `task-${"x".repeat(120)}`;
 	const longTitle = `T${"y".repeat(400)}`;
 	const goal = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
@@ -530,17 +524,16 @@ test("the pointer never truncates task ids, only titles and contracts", () => {
 	goal.currentTaskId = longId;
 	const pointer = goalPromptParts(goal).pointer;
 	assert.ok(pointer.includes(`taskId=${longId}]`) || pointer.includes(`taskId=${longId} `), "the header carries the full id");
-	assert.ok(pointer.includes(`Now: ${longId} · `), "Now carries the full id");
-	assert.ok(pointer.includes("Then: task-2 · Follow up"), "the successor appears in full too");
-	assert.ok(pointer.split("\n").some(line => line.startsWith(`Now: ${longId} · `)), "the id is not excerpted");
-	assert.match(pointer, /\[more: get_goal\(section="tasks"\)\]/, "the title and contract stay bounded");
+	// The list excerpts ids at 80 chars; the header remains exact.
+	assert.doesNotMatch(pointer, /^(Now|Then|Progress):/m);
+	assert.doesNotMatch(pointer, /y{200}|z{200}/, "the pointer carries neither the long title nor the long contract");
 
 	// Without a focused task the copy-pasteable example must carry the whole id as well.
 	goal.currentTaskId = undefined;
 	assert.ok(goalPromptParts(goal).pointer.includes(`update_goal_task({task_id:"${longId}", status:"start"})`), "a truncated id cannot be passed back");
 });
 
-test("the closing block points at the open step inside a phased task, not at the phase", () => {
+test("a focused phase retains its open child's id in the pointer header", () => {
 	const phased = (status: { p1?: string; p11?: string; p12?: string } = {}): GoalTaskList => ({
 		blockCompletion: false,
 		tasks: [
@@ -557,24 +550,19 @@ test("the closing block points at the open step inside a phased task, not at the
 	} as GoalTaskList);
 	const goal = createGoal({ objective: "Port the service", autoContinue: true, sisyphus: false });
 	goal.taskList = phased();
-	// Focusing the phase must not point the model at the phase: the open step is its first child.
 	goal.currentTaskId = "p1";
-	const phaseFocused = goalPromptParts(goal).pointer;
-	assert.match(phaseFocused, /\[PI GOAL NOW goalId=\S+ taskId=p1\.1\]/);
-	assert.match(phaseFocused, /Now: p1\.1 · Create the directories/, "the step carries its id, so a nested plan needs no Phase line");
-	assert.doesNotMatch(phaseFocused, /Phase:/);
-	assert.doesNotMatch(phaseFocused, /Done when:/, "the pointer leaves contracts to the policy block");
-	assert.match(phaseFocused, /Then: p1\.2 · Write the CLI entry/, "the next step is the sibling, not the phase's own child again");
-	// Focusing the child directly reads the same, so inheritance and focus agree.
+	const { state, pointer: phaseFocused } = goalPromptParts(goal);
+	assert.equal(phaseFocused, `[PI GOAL NOW goalId=${goal.id} taskId=p1.1]`);
 	assert.equal(goalPromptParts({ ...goal, currentTaskId: "p1.1" }).pointer, phaseFocused);
-	assert.match(goalPromptParts(goal).state, /Stage one ships an importable package/, "the phase contract stays in the policy block");
+	assert.match(state, /Current: p1 · Stage one/);
+	assert.match(state, /Stage one ships an importable package/, "the phase contract stays in the policy block");
 
 	// Every child done but the phase open: the phase itself is the step, and no Phase line appears.
 	goal.taskList = phased({ p11: "complete", p12: "complete" });
 	const phaseDone = goalPromptParts(goal).pointer;
 	assert.match(phaseDone, /taskId=p1\]/);
-	assert.match(phaseDone, /Now: p1 · Stage one/);
-	assert.match(phaseDone, /Then: p2 · Stage two/);
+	assert.match(goalPromptParts(goal).state, /Current: p1 · Stage one/);
+	assert.doesNotMatch(phaseDone, /^(Now|Then|Progress):/m);
 
 	// Without a focused task the suggestion descends too.
 	goal.taskList = phased();
@@ -588,5 +576,5 @@ test("the closing block points at the open step inside a phased task, not at the
 	}] } as GoalTaskList;
 	lightweight.currentTaskId = "docs";
 	assert.match(goalPromptParts(lightweight).pointer, /taskId=docs\]/);
-	assert.match(goalPromptParts(lightweight).pointer, /Now: docs · Write the docs/);
+	assert.match(goalPromptParts(lightweight).state, /Current: docs · Write the docs/);
 });

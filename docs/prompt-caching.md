@@ -6,7 +6,7 @@ The request layout is:
 
 1. Host system prompt and tool schemas.
 2. Conversation history, with each goal checkpoint normalized to a tiny, stable trigger in its original position.
-3. One request-only block carrying the goal policy (objective, tasks, lifecycle rules, limits, scheduling state and applicable reminders) followed by the next-step pointer: the open step (the deepest pending task, named by id and title so a nested plan needs no phase line), the next task, progress, and the usage header. It is rebuilt from the goal and appended at the tail on every request, so the model always reads the current step last.
+3. One request-only block carrying the goal policy (objective, tasks, lifecycle rules, limits, scheduling state and applicable reminders), followed by a header with the goal ID, the actionable task ID when focused, and usage. The task section carries progress and bounded task excerpts; a focused phase can appear as the current task even when the header identifies a child, and the next task is not always among the excerpts. With no current task or no task list, the tail also provides guidance for how to proceed. The block is rebuilt and appended at the tail on every request.
 
 Changing goal state never rewrites the system prompt or historical messages. The full goal-state message is not persisted into the session. Old checkpoints remain until Pi compacts history; retaining small markers avoids shifting the prefix on every continuation. Display-only auditor messages are consistently excluded, and tool calls stay adjacent to their results.
 
