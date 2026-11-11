@@ -10,11 +10,11 @@ const MARKERS = {
 	objective: null, // per-fixture: the exact objective text
 	verificationContract: null, // per-fixture
 	currentTask: (fixture) => fixture.currentTaskLine,
-	lifecyclePolicyThirdBlocker: /SAME blocker recur(s)? on three consecutive goal turns|THIRD consecutive identical blocker/g,
+	lifecyclePolicyThirdBlocker: /SAME blocker recur(s)? on three consecutive goal turns|THIRD consecutive identical blocker|same blocker recurs on 3 consecutive goal turns/g,
 	independentAuditor: /independent (completion )?auditor/g,
-	neverEditObjective: /objective is immutable|never edit it yourself|never edit the objective/g,
-	blockerPolicyUpdateGoal: /update_goal\(\{status: "blocked"\}\)/g,
-	completionPolicyUpdateGoal: /update_goal\(\{status: "complete"\}\)/g,
+	neverEditObjective: /objective is immutable|never edit it yourself|never edit the objective/gi,
+	blockerPolicyUpdateGoal: /update_goal\(\{status:\s*"blocked"\}\)/g,
+	completionPolicyUpdateGoal: /update_goal\(\{status:\s*"complete"\}\)/g,
 	goalActiveMarker: /\[PI GOAL ACTIVE goalId=/g,
 	checkpointMarker: /pi_goal_continuation/g,
 	unfocusedSafety: /\[PI GOAL UNFOCUSED\]/g,
@@ -70,6 +70,13 @@ export function currentTaskNeedle(goal) {
 		}
 		return undefined;
 	};
-	const task = find(goal.taskList.tasks);
+	let task = find(goal.taskList.tasks);
+	if (process.env.PI_GOAL_PROMPT_PROFILE !== "legacy-v1") {
+		while (task?.subtasks?.length && !task.lightweightSubtasks) {
+			const child = task.subtasks.find(t => t.status === "pending");
+			if (!child) break;
+			task = child;
+		}
+	}
 	return task ? `Current: ${task.id} · ${task.title}` : undefined;
 }

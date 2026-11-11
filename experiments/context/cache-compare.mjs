@@ -1,5 +1,6 @@
 /** Pure payload comparisons and deterministic retention measurements. */
 import assert from 'node:assert/strict';
+import approvedCompactBlocks from './approved-compact-blocks.json' with {type: 'json'};
 import {createHash} from 'node:crypto';
 import {LiveTailRetention} from '../../extensions/goal-live-retention.ts';
 // Namespace import: this driver also runs against the archived release tree, which has no
@@ -194,6 +195,16 @@ function pointerTextOk(text,replacement) {
  return header.startsWith('[PI GOAL NOW ')&&header.endsWith(']')&&usageOk&&pointerBodyOk(text,replacement.context);
 }
 
+/** Exact, fixture-scoped SHA-256 approvals for the reviewed compact format.
+ * All three texts must match; payload containers, history and markers are still
+ * checked independently below. These are reviewed snapshots, never regenerated
+ * during a gate run. */
+function approveCompactBlock(scenario, policy, counters, compact) {
+ const approved=approvedCompactBlocks[scenario.split('/').slice(2).join('/')];
+ return approved && digest(policy)===approved.releasePolicy
+  && digest(counters)===approved.releaseCounters && digest(compact)===approved.compactBlock;
+}
+
 /**
  * No payload normalization: a permitted delta must match an exact approved
  * transformation of the release block, never a fuzzy or order-insensitive match.
@@ -272,12 +283,15 @@ export function compareReports(baseline, candidate) {
    const policyText=blockText(aLive[0].raw), countersText=blockText(aLive[1].raw), mergedText=blockText(bLive[0].raw);
    const replacement=countersText===undefined?undefined:replaceWithPointer(countersText);
    assert.ok(policyText!==undefined&&countersText!==undefined&&replacement!==undefined&&mergedText!==undefined,`${b.id}: the merged block must carry readable text`);
-   assert.equal(mergedText.slice(0,policyText.length),policyText,`${b.id}: the merged block must start with the release policy bytes`);
-   assert.ok(mergedText[policyText.length]==='\n',`${b.id}: the pointer must follow the policy on its own line`);
-   assert.ok(pointerTextOk(mergedText.slice(policyText.length+1),replacement),`${b.id}: the merged block must end with an approved pointer`);
+   const compactApproved=approveCompactBlock(b.id,policyText,countersText,mergedText);
+   if(!compactApproved) {
+    assert.equal(mergedText.slice(0,policyText.length),policyText,`${b.id}: the merged block must start with the release policy bytes or match the exact approved compact transition`);
+    assert.ok(mergedText[policyText.length]==='\n',`${b.id}: the pointer must follow the policy on its own line`);
+    assert.ok(pointerTextOk(mergedText.slice(policyText.length+1),replacement),`${b.id}: the merged block must end with an approved pointer`);
+   }
    assert.deepEqual(bLive[0].raw,replaceOneText(aLive[0].raw,policyText,mergedText),`${b.id}: the merge must only replace the policy text`);
    if(a.reuse) assert.ok(b.reuse?.blocks>=a.reuse.blocks-2,`${b.id}: warm-prefix blocks lost`);
-   differences.push({scenario:b.id,reason:'next-step-pointer-merged',replacedBlocks:2,removedBytes:aLive.reduce((sum,block)=>sum+block.bytes,0)-bLive[0].bytes});
+   differences.push({scenario:b.id,reason:compactApproved?'compact-active-block':'next-step-pointer-merged',replacedBlocks:2,removedBytes:aLive.reduce((sum,block)=>sum+block.bytes,0)-bLive[0].bytes});
    continue;
   }
   assert.deepEqual(b.markers,a.markers,`${b.id}: cache markers changed`);

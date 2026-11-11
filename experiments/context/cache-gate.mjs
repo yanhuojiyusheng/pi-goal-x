@@ -18,7 +18,7 @@ try {
  const archive=execFileSync('git',['archive',ref,'extensions','experiments/context','package.json','package-lock.json'],{cwd:root,maxBuffer:16*1024*1024});
  execFileSync('tar',['-x','-C',baselineRoot],{input:archive});
  // Both trees use exactly the same fixtures, driver and installed SDK.
- for(const name of ['capture-context.mjs','fixtures.mjs','cache-report.mjs','cache-compare.mjs']) cpSync(path.join(root,'experiments/context',name),path.join(baselineRoot,'experiments/context',name));
+ for(const name of ['capture-context.mjs','fixtures.mjs','cache-report.mjs','cache-compare.mjs','approved-compact-blocks.json']) cpSync(path.join(root,'experiments/context',name),path.join(baselineRoot,'experiments/context',name));
  symlinkSync(path.join(root,'node_modules'),path.join(baselineRoot,'node_modules'),'dir');
  const baselineFile=path.join(output,'baseline.json');
  execFileSync(process.execPath,['--experimental-strip-types','experiments/context/cache-report.mjs','--retention=legacy',`--output=${baselineFile}`],{cwd:baselineRoot,maxBuffer:1024*1024});

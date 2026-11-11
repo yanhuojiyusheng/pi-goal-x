@@ -84,7 +84,7 @@ for (const fixtureId of expectedFixtureIds) {
 	// One block carries the policy and the pointer: it must appear exactly once and
 	// sit last, so the model reads the current step at the end of the request.
 	if (liveState.length && (liveState.length !== 1 || captured.messages.at(-1) !== liveState[0])) failures.push(`${fixtureId}: the live block must occur exactly once at the tail`);
-	if (active && !liveState[0]?.content?.includes("\n[PI GOAL NOW ")) failures.push(`${fixtureId}: next-step pointer missing`);
+	if (active && (!liveState[0].content.startsWith("[PI GOAL ACTIVE ") || liveState[0].content.includes("[PI GOAL NOW "))) failures.push(`${fixtureId}: expected one first ACTIVE header without a NOW block`);
 	const liveText = liveState[0]?.content ?? "";
 
 	// Required single-source markers on active-goal fixtures whose turn was
