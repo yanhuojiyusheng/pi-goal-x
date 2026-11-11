@@ -292,6 +292,6 @@ test("goal evolution instruction mentions /goal-tweak instead of updatedObjectiv
 	// objective policy lives only in the system-prompt injection (goalPrompt).
 	const goalText = goalPrompt(goal);
 	assert.ok(!goalText.includes("updatedObjective"), "goalPrompt must NOT reference updatedObjective");
-	assert.ok(goalText.includes("immutable"), "goalPrompt must mention the goal is immutable");
+	assert.ok(goalText.includes("Never edit the objective"), "goalPrompt must forbid editing the objective");
 	assert.ok(goalText.includes("/goal-tweak"), "goalPrompt must instruct user to run /goal-tweak");
 });

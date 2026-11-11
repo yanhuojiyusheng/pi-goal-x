@@ -146,7 +146,7 @@ test("changing and removing budget or run limits clears historical policy", () =
 	const block = goalPromptBlock(goal, {}, { tokens: 20, contextWindow: 1000 });
 	const out = retention.apply("s", [...base, { role: "assistant", content: "work" }], { block });
 	assert.equal(out.transientContents.length, 1);
-	assert.match(out.transientContents[0]!, /Limits: lifetime tokens=none; runs=unlimited/);
+	assert.doesNotMatch(out.transientContents[0]!, /Limits:/);
 	assert.doesNotMatch(out.transientContents.join("\n"), /tokens=100|runs=10/);
 	assert.match(modelBudgetLine({ tokenBudget: 1, usage: { tokensUsed: 2 } })!, /spending cap, not context capacity/);
 });

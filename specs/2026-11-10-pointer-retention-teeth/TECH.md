@@ -1,5 +1,30 @@
 # Technical plan
 
+## Implementation plan: approved compact block (2026-11-11)
+
+1. Add failing prompt regressions for a single ACTIVE header, fresh cumulative usage,
+   conditional rules/limits, actionable current + next, ancestor contracts and retrieval.
+2. Cache only stable policy/task text. Build the ACTIVE header from current usage and
+   actionable focus on every request; keep dynamic scheduler/context lines uncached.
+   Keep `goalPromptParts` for existing callers: state includes the header, pointer
+   contains only optional dynamic/fallback lines, never another header.
+3. Default task rendering uses TaskIndex to find the actionable focused task, ancestors
+   and next pending work (order after current, then wrap). Exclude ancestors and
+   descendants already represented by a lightweight parent from the next suggestion.
+   Count omitted pending entries independently from ancestor contract context. Bound
+   task titles/contracts; never truncate actionable ids. Preserve legacy rendering.
+4. Update old-format tests and context gates. Approve the new wording using exact
+   reviewed release/candidate text pairs, stored as fixture-scoped SHA-256 triples
+   in `experiments/context/approved-compact-blocks.json`; never regenerate approvals
+   during the gate. Keep raw container/history/options/tool/marker comparisons and
+   negative mutations for unexplained edits, not relaxed substring or normalized matching.
+5. Run focused tests, full suites, typecheck/lint and both context gates; record actual
+   results and any environmental limitations in MILESTONES.md. Review the diff inline;
+   no commits, merges, paid provider calls or subagent delegation are required.
+
+The user approved the sample and implementation, so execute in the current feature
+checkout without another approval checkpoint. Existing notes below are historical.
+
 ## Experimental branch update: shorter task pointer
 
 On `experiment/merged-live-block`, `nextStepBlock` keeps its header and optional

@@ -283,8 +283,8 @@ test("preferred command spellings reach the policy without changing user objecti
 	try {
 		await h.core.invokeGoalCommand!("goal-direct", "Document the literal /goal-resume command in a fixture.", h.ctx);
 		const text = goalPrompt(h.core.state.goal!, loadSettingsSnapshot(h.cwd).value);
-		assert.ok(text.includes("Only creation or user /work continue renews usage"));
-		assert.ok(text.includes("ask the user to run /goal edit"));
+		assert.ok(text.includes("User controls: /goal-pause, /work continue, /goal-clear"));
+		assert.ok(text.includes("ask the user to use /goal edit"));
 		assert.ok(text.includes("Document the literal /goal-resume command in a fixture."));
 	} finally { h.close(); }
 });

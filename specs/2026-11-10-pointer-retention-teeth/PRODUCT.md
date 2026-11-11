@@ -4,6 +4,33 @@ Status: in progress
 
 Branch: `feat/long-goal-drift-guards` (10 commits ahead of `main` at `b0fc15e`, 0.34.1; 21 files, +680/−357)
 
+## Approved update: one compact active block (2026-11-11)
+
+This update supersedes the shorter-pointer experiment and historical split-block design below.
+Keep one request-only block at the tail. Its FIRST `[PI GOAL ACTIVE ...]` header carries
+the full actionable task id and cumulative time/tokens; remove the final NOW header.
+Explain that usage is cumulative rather than context occupancy and that this state
+supersedes earlier snapshots.
+
+In regular automatic mode, show the approved six RULES: automatic continuation without
+a scheduling declaration and without opting into waits; audited completion; the same
+blocker recurring on three consecutive turns; immediate pause and user controls;
+immutable objective; direct work plus retrieval of omitted/changed/compacted requirements.
+Omit running status, regular mode and unlimited limits. Show finite limits, disabled
+continuation, Sisyphus discipline, strict scheduling, waits and context usage only when
+applicable. Preserve auditor rejection and post-compaction reminders.
+
+Replace the default bounded pending list with current actionable task + its contract,
+necessary ancestor contracts, and the next actionable pending task's title only. Keep
+ids intact and excerpts bounded with retrieval hints; explicitly require retrieving
+omitted details/contracts before starting. Report complete/total/skipped and omitted
+pending entry counts accurately, retaining the task completion gate. Preserve the
+legacy task-list profile and tiny persisted checkpoint marker.
+
+No new dependencies or README changes. Prompt size reduction is not a provider billing
+claim. Cache comparison must approve only exact reviewed text changes while retaining
+history, provider options, tools and marker checks.
+
 ## Experiment: remove the three task summary lines
 
 On `experiment/merged-live-block`, when a task is current, remove the pointer's

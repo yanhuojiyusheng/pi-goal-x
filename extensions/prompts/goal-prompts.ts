@@ -1,6 +1,6 @@
 import { commandInstructions, type GoalCommands } from "../goal-controls.ts";
 import { schedulerSummaryParts } from "../goal-scheduler-state.ts";
-import { taskIndex } from "../goal-task-index.ts";
+import { taskIndex, type TaskIndex } from "../goal-task-index.ts";
 import { statusLabel, truncateText } from "../goal-core.ts";
 import { promptSafeObjective } from "../goal-contract.ts";
 import type { GoalRecord, GoalTask } from "../goal-record.ts";
@@ -104,7 +104,8 @@ function renderPendingTasks(tasks: GoalTask[], indent: number, rendered: { count
 export function taskListBlock(goal: GoalRecord, settings?: GoalSettings): string {
 	if (settings?.disableTasks) return "";
 	if (!goal.taskList || goal.taskList.tasks.length === 0) return "";
-	const index = taskIndex(goal.taskList.tasks);
+ const index = taskIndex(goal.taskList.tasks);
+ if (promptProfile() !== "legacy-v1") return compactTaskList(goal, index);
  const {complete, skipped, pending: pendingTasks} = index;
  const total = index.ordered.length;
  const pending = pendingTasks.length;
@@ -120,35 +121,67 @@ export function taskListBlock(goal: GoalRecord, settings?: GoalSettings): string
 			lines.push(`  Current: ${excerpt(current.id, 80, "tasks")} · ${excerpt(current.title, 180, "tasks")}${contract}`);
 		}
 	}
-	const legacy = promptProfile() === "legacy-v1";
-	if (legacy) {
-		// legacy-v1: pre-PR-E wording (current task also appears as a generic
-		// pending item; UI shortcut hint included).
-		const rendered = { count: 0, stop: false };
-		lines.push(...renderPendingTasks(goal.taskList.tasks, 0, rendered));
-		const hiddenPending = Math.max(0, (pending ?? 0) - rendered.count - (goal.currentTaskId && pendingTasks?.some(t => t.id === goal.currentTaskId) ? 1 : 0));
-		if (hiddenPending > 0) {
-			lines.push(`  (+${hiddenPending} more pending — expand the dashboard with Ctrl+Shift+T)`);
-		}
-	} else {
-		// compact-v2: the current task appears ONCE (in the Current line above);
-		// visible pending items exclude it.
-		const rendered = { count: 0, stop: false, skipId: goal.currentTaskId };
-		lines.push(...renderPendingTasks(goal.taskList.tasks, 0, rendered));
-		const hiddenPending = Math.max(0, (pending ?? 0) - rendered.count - (goal.currentTaskId && pendingTasks?.some(t => t.id === goal.currentTaskId) ? 1 : 0));
-		if (hiddenPending > 0 && rendered.count === 0) {
-			// Nothing visible at all: point at the next actionable task instead.
-			const next = pendingTasks?.find((t) => t.id !== goal.currentTaskId);
-			if (next) lines.push(`  Next pending: ${next.id} — ${next.title}`);
-		}
-		if (hiddenPending > 0) {
-			lines.push(`  ${hiddenPending} additional pending tasks omitted; retrieve with get_goal(section="tasks").`);
-		}
-	}
+ const rendered = { count: 0, stop: false };
+ lines.push(...renderPendingTasks(goal.taskList.tasks, 0, rendered));
+ const hiddenPending = Math.max(0, pending - rendered.count - (goal.currentTaskId && pendingTasks.some(t => t.id === goal.currentTaskId) ? 1 : 0));
+ if (hiddenPending > 0) lines.push(`  (+${hiddenPending} more pending — expand the dashboard with Ctrl+Shift+T)`);
 	if (goal.taskList.blockCompletion && pending! > 0) {
 		lines.push("  TASK GATE: do not request completion while tasks remain in [ ] pending state");
 	}
 	return lines.join("\n");
+}
+
+/** Ancestors in outermost-first order, including contracts above a leaf focus. */
+function taskAncestors(task: GoalTask, index: TaskIndex): GoalTask[] {
+ const result: GoalTask[] = [];
+ let parentId = index.ordered.find(entry => entry.task.id === task.id)?.parentId;
+ while (parentId) {
+  const parent = index.byId.get(parentId);
+  if (!parent) break;
+  result.unshift(parent);
+  parentId = index.ordered.find(entry => entry.task.id === parent.id)?.parentId;
+ }
+ return result;
+}
+
+function focusedTask(goal: GoalRecord, settings?: GoalSettings): GoalTask | undefined {
+ if (settings?.disableTasks || !goal.currentTaskId) return undefined;
+ const focused = taskIndex(goal.taskList?.tasks).byId.get(goal.currentTaskId);
+ return focused && actionableTask(focused);
+}
+
+/** Current work, inherited contracts and one next step; other entries stay retrievable. */
+function compactTaskList(goal: GoalRecord, index: TaskIndex): string {
+ const current = focusedTask(goal);
+ const ancestors = current ? taskAncestors(current, index) : [];
+ const currentIndex = index.ordered.findIndex(entry => entry.task.id === current?.id);
+ const ordered = [...index.ordered.slice(currentIndex + 1), ...index.ordered.slice(0, currentIndex + 1)];
+ const next = ordered.map(entry => entry.task).find(task =>
+  task.status === "pending" && task.id !== current?.id && !ancestors.some(parent => parent.id === task.id)
+  && actionableTask(task).id === task.id && !taskAncestors(task, index).some(parent => parent.lightweightSubtasks));
+ const lines = [`[TASKS — ${index.complete}/${index.ordered.length} complete${index.skipped ? ` (${index.skipped} skipped)` : ""}]`];
+ if (current) {
+  lines.push(`Current: ${current.id} · ${excerpt(current.title, 180, "tasks")}${current.lightweightSubtasks ? " (lightweight)" : ""}`);
+  if (current.verificationContract) lines.push(`Done when: ${excerpt(current.verificationContract, 600, "tasks")}`);
+  // Keep inherited obligations bounded; overflow is explicitly retrievable.
+  let remaining = 1600;
+  for (const parent of ancestors) {
+   if (!parent.verificationContract) continue;
+   const line = `Parent ${parent.id} contract: ${excerpt(parent.verificationContract, 600, "tasks")}`;
+   if (line.length > remaining) {
+    lines.push('Additional parent contracts omitted; retrieve with get_goal(section="tasks").');
+    break;
+   }
+   lines.push(line);
+   remaining -= line.length;
+  }
+ }
+ if (next) lines.push(`Next pending: ${next.id} · ${excerpt(next.title, 180, "tasks")}${next.lightweightSubtasks ? " (lightweight)" : ""}`);
+ const hidden = index.pending.length - (current?.status === "pending" ? 1 : 0) - (next ? 1 : 0);
+ if (hidden > 0) lines.push(`${hidden} other pending task entries omitted.`);
+ if (index.pending.length > 0) lines.push('Before starting a task whose details or contract are omitted, retrieve them with get_goal(section="tasks").');
+ if (goal.taskList?.blockCompletion && index.pending.length > 0) lines.push("TASK GATE: do not request completion while tasks remain in [ ] pending state");
+ return lines.join("\n");
 }
 
 /** Bounded verification-contract block. */
@@ -186,16 +219,14 @@ export function sisyphusDisciplineBlock(goal: GoalRecord): string {
 /** Shared outcome/blocker policy for active goals (bounded). */
 function lifecyclePolicyBlock(autonomous: boolean, strict: boolean, commands?: GoalCommands): string {
  return commandInstructions([
-  "[OUTCOMES]",
-  '- Automatic runs default to unlimited. maxAutonomousRuns in .pi/pi-goal-x-settings.json caps runs; 0 disables (agents may set it). Only creation or user /goal-resume renews usage.',
+  "[RULES]",
   ...(autonomous && strict ? ['- End execution with update_goal: ready for runnable work, wait for an external condition, or a status below. Saved decisions terminate; further work invalidates them. Missing decisions allow one repair. Never busy-poll.'] : []),
-  ...(autonomous && !strict ? ['- Continue pursuing the goal automatically after each execution; no scheduling declaration is required. New waits require user opt-in to strictExecutionContract; do not enable it merely to continue.'] : []),
-  '- update_goal({status: "complete"}) only when every requirement is satisfied; the independent completion auditor checks actual evidence. Approval archives; rejection requires rework.',
-  '- update_goal({status: "blocked"}) only after the SAME blocker recurs on three consecutive goal turns; keep trying concrete steps before then.',
-  '- update_goal({status: "paused", reason: "…"}) pauses immediately. User controls: /goal-pause, /goal-resume, /goal-clear.',
-  '- The objective is immutable: never edit it yourself; ask the user to run /goal-tweak.',
-  '- Use work tools directly. Do not call get_goal repeatedly when the needed state is already visible.',
-  '- Retrieve omitted requirements before acting on them. Re-read changed requirements and details lost after compaction. Full objective/contracts: get_goal(section="objective"); tasks: get_goal(section="tasks").',
+  ...(autonomous && !strict ? ['- Continue automatically; no scheduling declaration is required. Do not introduce waits without user opt-in or enable strictExecutionContract merely to continue.'] : []),
+  '- Request completion with update_goal({status:"complete"}) only after all requirements are met. An independent auditor checks actual evidence: approval archives the goal; rejection requires rework.',
+  '- update_goal({status:"blocked"}) only after the same blocker recurs on 3 consecutive goal turns; keep trying concrete steps first.',
+  '- update_goal({status:"paused",reason:"…"}) pauses immediately. User controls: /goal-pause, /goal-resume, /goal-clear.',
+  '- Never edit the objective; ask the user to use /goal-tweak.',
+  '- Use work tools directly; avoid redundant get_goal calls. Retrieve missing, changed, or compacted-away requirements before acting. Full objective/contracts: get_goal(section="objective"); tasks: get_goal(section="tasks").',
  ].join("\n"), commands);
 }
 
@@ -238,23 +269,22 @@ function retainedTaskChars(task: GoalTask): number {
 function policyText(goal: GoalRecord, settings?: GoalSettings): string {
 	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
 	const { instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
-	const limits = `Limits: lifetime tokens=${goal.tokenBudget ?? "none"}; runs=${settings?.maxAutonomousRuns ?? "unlimited"}.`;
-	return [fixed, instructions, limits, "Usage spans goal turns, not context. Latest snapshot supersedes earlier snapshots."].filter(Boolean).join("\n");
+ const limits = [goal.tokenBudget === undefined ? "" : `lifetime tokens=${goal.tokenBudget}`, settings?.maxAutonomousRuns === undefined ? "" : `runs=${settings.maxAutonomousRuns}`].filter(Boolean);
+ return [fixed, instructions, limits.length ? `Limits: ${limits.join("; ")}.` : ""].filter(Boolean).join("\n");
 }
 
-/**
- * The complete request-only block: policy first, pointer last. One block is
- * cheaper than a pinned policy plus a replaced pointer whenever a request adds
- * more tokens than the policy holds, because pinning it costs a re-read of
- * everything between the old anchor and the tail.
- */
+/** One request-only tail block. Provider billing depends on its cache behavior. */
 export function goalPromptBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
-	return `${policyText(goal, settings)}\n${nextStepBlock(goal, settings, contextUsage)}`;
+ const {state, pointer} = goalPromptParts(goal, settings, contextUsage);
+ return [state, pointer].filter(Boolean).join("\n");
 }
 
-/** The block split for callers that need the parts separately (tests, reports). */
+/** State includes the fresh header; pointer contains only optional runtime guidance. */
 export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; pointer: string } {
-	return { state: policyText(goal, settings), pointer: nextStepBlock(goal, settings, contextUsage) };
+ const current = focusedTask(goal, settings);
+ const usage = formatUsage(goal);
+ const header = `[PI GOAL ACTIVE goalId=${goal.id}${current ? ` taskId=${current.id}` : ""}${usage ? ` ${usage}` : ""}]`;
+ return { state: `${header}\n\nUsage is cumulative across goal turns, not context occupancy. This state supersedes earlier snapshots.\n\n${policyText(goal, settings)}`, pointer: nextStepBlock(goal, settings, contextUsage) };
 }
 
 /** The open step a focused task stands for: its first open child, recursively. */
@@ -268,22 +298,12 @@ function actionableTask(task: GoalTask): GoalTask {
 	}
 }
 
-/**
- * The final part of the request-only goal block. For a focused task the header
- * identifies its deepest open step and carries cumulative usage; task details
- * remain in the policy above. When no task is focused or no list exists, keep
- * the instructions that tell the model how to proceed. Lightweight children
- * are notes on their parent and do not become the actionable step.
- */
+/** Runtime guidance after the policy; focused tasks need no additional summary. */
 
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
-	const usage = formatUsage(goal);
-	const header = (taskId?: string): string =>
-		`[PI GOAL NOW goalId=${goal.id}${taskId ? ` taskId=${taskId}` : ""}${usage ? ` ${usage}` : ""}]`;
-	const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
-	const focused = index && goal.currentTaskId ? index.byId.get(goal.currentTaskId) : undefined;
-	const current = focused && actionableTask(focused);
-	const lines = [header(current?.id)];
+ const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
+ const current = focusedTask(goal, settings);
+ const lines: string[] = [];
 	if (index && !current) {
 		const first = index.pending[0];
 		const next = first && actionableTask(first);
@@ -305,8 +325,7 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 }
 
 export function goalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
-	const { state, pointer } = goalPromptParts(goal, settings);
-	return `${state}\n${pointer}`;
+ return goalPromptBlock(goal, settings);
 }
 
 /** Cumulative goal usage, or an empty string when the goal has spent nothing yet. */
@@ -321,12 +340,11 @@ function formatUsage(goal: GoalRecord): string {
 }
 
 function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
- // Stable policy comes first; the changing pointer is appended by goalPromptParts.
+ // Cache stable policy only; telemetry is built fresh in goalPromptParts.
  // Bound individual data fields so essential rules can never be sliced off.
  return [
-  `[PI GOAL ACTIVE goalId=${goal.id}]`,
-  lifecyclePolicyBlock(settings?.maxAutonomousRuns !== 0, settings?.strictExecutionContract === true || !!goal.scheduler?.wait, settings?.commands), sisyphusDisciplineBlock(goal),
-  `Status: ${statusLabel(goal)}\nMode: ${goal.sisyphus ? "sisyphus" : "regular"}`,
+  lifecyclePolicyBlock(goal.autoContinue && settings?.maxAutonomousRuns !== 0, settings?.strictExecutionContract === true || !!goal.scheduler?.wait, settings?.commands), sisyphusDisciplineBlock(goal),
+  goal.status !== "active" || !goal.autoContinue ? `Status: ${statusLabel(goal)}` : "",
   untrustedObjectiveBlock(goal), taskListBlock(goal, settings), verificationContractBlock(goal, settings),
  ].filter(Boolean).join("\n\n");
 }

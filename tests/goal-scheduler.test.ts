@@ -797,8 +797,8 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  const first = await request();
  assert.deepEqual(first.slice(0, -1), original, "policy and next-step pointer ride as one request-only tail");
  assert.equal(first.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
- assert.match(first.at(-1).content, /PI GOAL ACTIVE/);
- assert.match(first.at(-1).content, /PI GOAL NOW/);
+ assert.match(first.at(-1).content, /^\[PI GOAL ACTIVE/);
+ assert.doesNotMatch(first.at(-1).content, /PI GOAL NOW/);
  const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
  await h.handlers.before_provider_request!({payload: wire}, h.ctx);
  assert.equal(wire.messages[0].content[0].cache_control.type, "ephemeral", "registered provider hook places the breakpoint on history");
@@ -813,7 +813,7 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  assert.deepEqual(second.slice(1, 3), [toolCall, toolResult], "tool call and result stay adjacent");
  assert.match(second.at(-1).content, /PI GOAL ACTIVE/);
  assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 1, "the block is replaced, never accumulated");
- assert.match(second.at(-1).content, /12345 tokens/, "usage lives in the pointer header: it is the clock that keeps the pointer at the tail");
+ assert.match(second.at(-1).content, /12345 tokens/, "usage is refreshed in the first ACTIVE header");
  assert.ok(!JSON.stringify(second).includes("Autonomous runs"), "an unlimited allowance reports no runs line");
  // An objective edit changes the stable policy block: retention resets once so no
  // stale objective lingers mid-history, and the fresh pair anchors the new prefix.
@@ -822,7 +822,8 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  assert.equal(third.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
  assert.deepEqual(third.slice(0, 3), history);
  assert.match(third.at(-1).content, /Changed objective/);
- assert.match(third.at(-1).content, /PI GOAL NOW/);
+ assert.match(third.at(-1).content, /^\[PI GOAL ACTIVE/);
+ assert.doesNotMatch(third.at(-1).content, /PI GOAL NOW/);
  h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
  for (let i = 0; i < 4; i++) {
   history.push({role: "custom", customType: "pi-goal-event", content: "legacy full prompt", details: {goalId: h.core.state.goal!.id, kind: "checkpoint"}, timestamp: i + 4});
