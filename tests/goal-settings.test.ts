@@ -314,7 +314,7 @@ test("parseSettingsLayer: invalid stateReanchorRequests produces a diagnostic in
 	}
 });
 
-test("loadGoalSettings: stateReanchorRequests defaults to unset (window falls back to 24) and preserves an explicit 0", () => {
+test("loadGoalSettings: stateReanchorRequests defaults to unset (window falls back to MAX_STATE_REANCHOR_REQUESTS) and preserves an explicit 0", () => {
 	withTempDir((dir) => {
 		const configPath = goalSettingsPath(dir);
 		fs.mkdirSync(path.dirname(configPath), { recursive: true });

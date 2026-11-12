@@ -16,10 +16,12 @@ const live = "[PI GOAL ACTIVE goalId=fixture]\nUsage: 123 tokens";
 // Retention replaces the next-step pointer at the tail instead of accumulating
 // copies, so a request's reusable prefix ends just before that one block. Every
 // prefix assertion states that boundary explicitly.
-const reusablePrefix = (conversation: any[]) => conversation.slice(0, -1);
+// Retention appends one next-step pointer copy per changed request and keeps the
+// earlier copies, so every request begins with the previous request verbatim and
+// its reusable prefix reaches the end of the previous request.
 const pointer = (conversation: any[]) => conversation.slice(-1);
 // A request's reusable prefix must extend the previous one verbatim.
-const assertExtends = (next: any[], previous: any[]) => assert.deepEqual(next.slice(0, previous.length), previous);
+const assertExtends = (next: any[], previous: any[], message = "extends the previous request") => assert.deepEqual(next.slice(0, previous.length), previous, message);
 const stripContextLine = (block: any) => JSON.parse(JSON.stringify(block, (_key, value) => typeof value === "string" ? value.replace(/\nContext snapshot: [^\n]*$/, "") : value));
 
 test("real adapters preserve registered context visibility, retries and toggles", async () => {
@@ -58,7 +60,7 @@ test("real adapters preserve registered context visibility, retries and toggles"
       assert.deepEqual(next.system, previous.system);
       if (flavor.startsWith("openai")) {
        const a = previous.input ?? previous.messages, b = next.input ?? next.messages;
-       assert.deepEqual(reusablePrefix(b), reusablePrefix(a), "toggle preserves the implicit prefix");
+       assertExtends(b, a, "toggle preserves the implicit prefix");
        assert.deepEqual(stripContextLine(b.at(-1)), stripContextLine(a.at(-1)), "toggle changes only the pointer's context line");
       }
       assert.deepEqual(await capture(), next, "retry adds no tail");
@@ -113,11 +115,10 @@ for (const flavor of ["anthropic-messages", "openai-completions", "openai-respon
 
 // Advancing-history regression: a completed assistant turn entering history must
 // not displace the retained policy block. The production retention helper builds
-// each request (hook wiring is tested separately): everything before the
-// per-request pointer is an exact prefix of the next request, letting implicit
-// caches (OpenAI Responses / Chat Completions, which carry no explicit marker)
-// reuse the policy block and completed turns. Only the pointer, which has to be
-// read last, is rewritten.
+// each request (hook wiring is tested separately): every earlier request stays an
+// exact prefix of the next one, letting implicit caches (OpenAI Responses / Chat
+// Completions, which carry no explicit marker) reuse the policy block, the
+// completed turns, and every pointer copy already appended.
 for (const flavor of ["openai-completions", "openai-responses"] as const) {
 	test(`real ${flavor} serialization keeps an advancing prefix across assistant turns`, async () => {
 		const cwd = mkdtempSync(path.join(tmpdir(), "goal-cache-advance-"));
@@ -151,15 +152,15 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			const conversation = (p: any) => p.messages ?? p.input;
 			const a = conversation(first), b = conversation(second), c = conversation(third);
 			assert.ok(a.length < b.length && b.length < c.length, "each advanced request carries its completed turn");
-			assertExtends(reusablePrefix(b), reusablePrefix(a));
-			assertExtends(reusablePrefix(c), reusablePrefix(b));
-			assert.equal(reusablePrefix(c).length - reusablePrefix(b).length, 1, "the second advance adds only its own completed turn");
-			assert.deepEqual(pointer(a).filter((m: any) => JSON.stringify(m).includes("hold the line")), pointer(b).filter((m: any) => JSON.stringify(m).includes("hold the line")), "the policy block keeps its anchor");
+			assertExtends(b, a);
+			assertExtends(c, b);
+			assert.equal(c.length - b.length, 2, "the second advance adds its completed turn and one pointer copy");
+			assert.equal(JSON.stringify(b).split("hold the line").length - 1, 1, "the policy block appears once");
 			assert.ok(JSON.stringify(pointer(b)).includes("Usage: 200 tokens"), "the current pointer is the last block");
-			assert.ok(!JSON.stringify(reusablePrefix(b)).includes("Usage: 100 tokens"), "the replaced pointer leaves no copy behind");
-			// Two advances add at most the completed turns plus their small counter tails:
-			// the stable policy block is retained in place, never resent.
-			assert.ok(c.length - a.length <= 4, "growth comes from completed turns, not from repeated pointers");
+			assert.ok(JSON.stringify(b.slice(0, a.length)).includes("Usage: 100 tokens"), "the earlier copy stays in the shared prefix");
+			// Two advances add the completed turns plus their pointer copies, while the
+			// stable policy block stays retained in place and is never resent.
+			assert.ok(c.length - a.length <= 4, "growth comes from completed turns and one copy each, not from the policy block");
 			// Real tool-loop history, including parallel calls/results, followed by
 			// a user turn. No retained user tail may split a call/result pair.
 			session.push({...turn(3, 4), content: [
@@ -168,12 +169,12 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			], stopReason: "toolUse"});
 			for (const id of ["call_a", "call_b"]) session.push({role: "toolResult", toolCallId: id, toolName: "read", content: [{type: "text", text: id}], isError: false, timestamp: 5});
 			const fourth = conversation(await capture(session, {state, pointer: "Usage: 400 tokens"}));
-			assertExtends(reusablePrefix(fourth), reusablePrefix(c));
+			assertExtends(fourth, c);
 			assert.ok(!JSON.stringify(fourth).includes("No result provided"), "serializer never synthesizes an orphan result");
 			assert.deepEqual(conversation(await capture(session, {state, pointer: "Usage: 400 tokens"})), fourth, "retry does not grow the prompt");
 			session.push(turn(4, 6), {role: "user", content: "continue", timestamp: 7});
 			const fifth = conversation(await capture(session, {state, pointer: "Usage: 500 tokens"}));
-			assertExtends(reusablePrefix(fifth), reusablePrefix(fourth));
+			assertExtends(fifth, fourth);
 			// A result arriving after a captured call must remove the unsafe anchor.
 			session.push({...turn(5, 8), content: [{type: "toolCall", id: "delayed", name: "read", arguments: {path: "missing"}}], stopReason: "toolUse"});
 			await capture(session, {state, pointer: "Usage: 600 tokens"});
@@ -201,7 +202,8 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 				const text = JSON.stringify(conversation(payload));
 				assert.ok(!text.includes("Usage: 800 tokens"));
 				assert.equal(text.split("Objective: revised").length - 1, 1);
-				assert.equal(text.split("Goal snapshot:").length - 1, 1, "one pointer copy");
+				const copies = text.split("Goal snapshot:").length - 1;
+				assert.ok(copies >= 1 && copies <= 13, `pointer copies stay bounded by the window, got ${copies}`);
 				assert.deepEqual(payload.tools, first.tools, "tool schemas stay fixed through resets");
 				assert.deepEqual(conversation(payload).filter((m: any) => m.role === "system" || m.role === "developer"), a.filter((m: any) => m.role === "system" || m.role === "developer"));
 				assert.deepEqual(conversation(await capture(session, fresh)), conversation(payload), "retry at/after eviction is identical");
