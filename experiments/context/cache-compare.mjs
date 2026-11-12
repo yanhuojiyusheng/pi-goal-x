@@ -154,10 +154,16 @@ export function compareReports(baseline, candidate) {
  assert.deepEqual(candidate.rows.map(r=>r.id),baseline.rows.map(r=>r.id),'missing/reordered scenario');
  if(baseline.corpus) {
   assert.equal(candidate.corpus.transitions,baseline.corpus.transitions,'retention corpus length changed');
-  assert.ok(candidate.corpus.maxRetainedMessages<=2,`retained block count grew to ${candidate.corpus.maxRetainedMessages}`);
-  assert.ok(candidate.corpus.maxRetainedBytes<=2048,`retained bytes grew to ${candidate.corpus.maxRetainedBytes}`);
-  assert.equal(candidate.corpus.pointerReplacements,candidate.corpus.transitions-1,'the pointer must be replaced on every fresh request');
-  assert.ok(candidate.corpus.policyAnchorMoves<=Math.ceil(candidate.corpus.transitions/reanchorWindow())+1,`policy re-anchored ${candidate.corpus.policyAnchorMoves} times`);
+  // One policy block plus one pointer copy per window. The archived release
+  // replaced its pointer, so it used two blocks and broke the prefix on every
+  // fresh request; this tree appends copies and breaks the prefix only when a
+  // window ends.
+  const window=Math.max(1,reanchorWindow());
+  assert.ok(candidate.corpus.maxRetainedMessages<=window+1,`retained block count grew to ${candidate.corpus.maxRetainedMessages}`);
+  assert.ok(candidate.corpus.maxRetainedBytes<=window*1024+2048,`retained bytes grew to ${candidate.corpus.maxRetainedBytes}`);
+  assert.ok(candidate.corpus.pointerReplacements<=Math.ceil(candidate.corpus.transitions/window)+1,`the pointer was dropped ${candidate.corpus.pointerReplacements} times`);
+  assert.ok(candidate.corpus.pointerReplacements>0,'appending pointers must still reset when a window ends');
+  assert.ok(candidate.corpus.policyAnchorMoves<=Math.ceil(candidate.corpus.transitions/window)+1,`policy re-anchored ${candidate.corpus.policyAnchorMoves} times`);
   assert.ok(candidate.corpus.breaks>0,'advancing history must move at least one retained block');
  }
  if(baseline.dependencies) assert.equal(candidate.dependencies,baseline.dependencies,'comparison dependencies differ');

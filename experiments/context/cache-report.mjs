@@ -7,7 +7,11 @@ import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {ModelRuntime, convertToLlm} from '@earendil-works/pi-coding-agent';
 import {cacheGoalHistory} from '../../extensions/goal-prompt-cache.ts';
-import {LiveTailRetention} from '../../extensions/goal-live-retention.ts';
+import * as retentionModel from '../../extensions/goal-live-retention.ts';
+const {LiveTailRetention} = retentionModel;
+// The archived release replaces one pointer and answers with two blocks. A tree
+// that accumulates pointers keeps one policy block plus one copy per window.
+const defaultBlockBound = (retentionModel.MAX_STATE_REANCHOR_REQUESTS ?? 1) + 1;
 import {captureOne} from './capture-context.mjs';
 import {FIXTURES, userMessage, assistantMessage} from './fixtures.mjs';
 import {digest, summarize, compareReports, investigateCache} from './cache-compare.mjs';
@@ -15,7 +19,7 @@ import {digest, summarize, compareReports, investigateCache} from './cache-compa
 const prefix = (a, b) => { let n=0; while(n<a.length && n<b.length && a[n].hash===b[n].hash) n++; return n; };
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
-export async function buildReport({blockBound=2}={}) {
+export async function buildReport({blockBound=defaultBlockBound}={}) {
  const work=mkdtempSync(path.join(tmpdir(),'goal-cache-report-'));
  const rows=[];
  const samples=[];
@@ -107,7 +111,7 @@ export async function buildReport({blockBound=2}={}) {
 if(process.argv[1]===fileURLToPath(import.meta.url)) {
  // The archived release accumulates counter tails and legitimately retains up to
  // 32 blocks; this tree keeps exactly two. The caller names the model it runs.
- const candidate=await buildReport({blockBound:process.argv.includes('--retention=legacy')?32:2});
+ const candidate=await buildReport(process.argv.includes('--retention=legacy')?{blockBound:32}:{});
  const baselinePath=process.argv.find(a=>a.startsWith('--baseline='))?.slice(11);
  const output=process.argv.find(a=>a.startsWith('--output='))?.slice(9);
  if(output) writeFileSync(output,JSON.stringify(candidate,null,2)+'\n');
