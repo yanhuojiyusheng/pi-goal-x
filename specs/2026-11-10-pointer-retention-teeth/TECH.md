@@ -1,10 +1,12 @@
 # Technical plan
 
-Implementation status: in progress (2026-11-10).
+Implementation status: appending pointer implemented 2026-11-12 on
+`feat/goal-pointer-per-turn` (from `3e1cb35`).
 
-Plan baseline: `feat/long-goal-drift-guards` @ `09926bf`, 10 commits ahead of `main` (`b0fc15e`,
-0.34.1). This plan changes verification, prompt text and settings plumbing; it does not
-redesign the retention model that landed on the branch.
+Plan baseline: the verification/settings work below landed on `feat/long-goal-drift-guards`.
+The sections §1 and §1.1 describe the *replaced* pointer state machine and are kept as
+record; §1.3 describes what the branch now does. The plan's gate work (§3) and test plan
+(§4) still apply, with the bounds restated for accumulation.
 
 ## 1. Current retention state machine
 
@@ -20,7 +22,8 @@ interface SessionRetention {
 }
 ```
 
-`apply(sessionKey, base, fresh)` runs, in order:
+`apply(sessionKey, base, fresh)` runs, in order (as of the replaced-pointer model in §1.1;
+see §1.3 for the current one):
 
 1. Fingerprint every `base` message (`sha256` of a stable serialization; `null` when the
    message cannot be serialized).
@@ -39,7 +42,7 @@ interface SessionRetention {
 
 `reset()` clears `tails`, `lastFresh`, `baseFingerprints` and `applies`.
 
-### 1.1 Window check today
+### 1.1 Window check as it was for a replaced pointer
 
 ```ts
 if (shared < blocks.length) {
@@ -52,11 +55,46 @@ if (shared < blocks.length) {
 }
 ```
 
-`MAX_STATE_REANCHOR_REQUESTS = 128`. The request that performs the reset does not consume
-window budget, so a window is exactly 128 fresh requests (resets on requests 128, 256, …).
+`MAX_STATE_REANCHOR_REQUESTS = 128` at that time (12 → 24 → 128 across `2857c2f`,
+`52b01c7`, `b95a23d`). The request that performs the reset does not consume window budget,
+so a window is exactly 128 fresh requests (resets on requests 128, 256, …).
 Counting the reset request as one made every window after the first only 23 requests long —
 the branch shipped that off-by-one and the rewritten window test caught it. Only fresh
 content advances the window, so an identical retry stays byte-identical (and warm).
+
+### Run boundary correction (2026-11-12)
+
+Track the agent run boundary per session. `agent_start` makes the next request eligible to append one pointer; subsequent requests freeze that pointer until the next run. The initial request appends one copy, and each new run appends one copy even if text is identical. Policy changes and unsafe history retain their existing reset precedence. Verify with multiple requests and tool results inside one run, a subsequent run, and the 12-copy boundary.
+
+### 1.3 Accumulating pointer (historical; see correction above)
+
+`MAX_STATE_REANCHOR_REQUESTS = 12`. `FreshLiveTails` drops the concept of "shared blocks";
+`apply` now:
+
+1. Fingerprints `base` and resets exactly as before (state changed, pointer vanished, anchor
+   on empty history, history shrank or changed, anchor splits a tool batch).
+2. Compares the newest retained copy with `fresh.pointer`:
+   `const pointerChanged = fresh.pointer !== undefined && fresh.pointer !== session.tails.at(-1)?.content`.
+   An identical retry appends nothing and returns the previous message array byte-for-byte.
+3. Resets when `window > 0 && session.tails.length > 0 && session.applies >= window`. The
+   reset does not consume budget, so a window is exactly `window` appended copies.
+4. Replays all retained tails at their anchors, appends `fresh.state` only when the tails
+   were just cleared, then appends the new copy and increments `applies` when the pointer
+   changed.
+
+`SessionRetention.applies` therefore counts appended copies, not requests. `transientContents`
+returns every retained copy plus the fresh ones so `goal-prompt-cache.ts` still relocates
+explicit markers past all of them.
+
+`extensions/goal-events.ts` no longer returns early for a completed goal: it emits a
+`[PI GOAL COMPLETE goalId=…]` state block, so the completed goal stays visible and is
+re-anchored at the tail on the next request instead of vanishing.
+
+Bounds in `experiments/context/cache-report.mjs` and `cache-compare.mjs` follow the model:
+`blockBound = MAX_STATE_REANCHOR_REQUESTS + 1`, `maxRetainedMessages <= window + 1`,
+`maxRetainedBytes <= window·1024 + 2048`, and both `pointerReplacements` and
+`policyAnchorMoves` are bounded by `ceil(transitions / window) + 1`. The corpus asserts
+`pointerReplacements > 0` so a silently frozen prefix still fails.
 
 ### 1.2 Window as a setting
 

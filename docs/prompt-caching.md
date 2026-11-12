@@ -6,7 +6,7 @@ The request layout is:
 
 1. Host system prompt and tool schemas.
 2. Conversation history, with each goal checkpoint normalized to a tiny, stable trigger in its original position.
-3. Request-only goal policy plus the next-step pointer that carries the open step (the deepest pending task, named by id and title so a nested plan needs no phase line), that step's completion contract, the next task and the usage header. The policy block is replayed at a verified history anchor; the pointer is replaced at the tail on every request.
+3. Request-only goal policy and retained next-step pointers. The policy stays at a verified history anchor; a pointer is appended at the first request of each agent run and remains fixed through its tool loop.
 
 Changing goal state never rewrites the system prompt or historical messages. The full goal-state message is not persisted into the session. Old checkpoints remain until Pi compacts history; retaining small markers avoids shifting the prefix on every continuation. Display-only auditor messages are consistently excluded, and tool calls stay adjacent to their results.
 
@@ -24,52 +24,19 @@ Validation includes consecutive request-prefix regressions; actual Anthropic, An
 
 Provider references: [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) describes exact-prefix matching and explicit breakpoints; [DeepSeek context caching](https://api-docs.deepseek.com/guides/kv_cache/) describes its automatic prefix cache and usage counters.
 
-Active requests split two request-only blocks with opposite needs. The policy block (objective, tasks, lifecycle rules, limits, scheduling state and applicable recovery/auditor reminders) is large and stable, so it is retained verbatim at a verified history anchor and re-anchored once per `stateReanchorRequests` requests that carry fresh content (default 128; `0` keeps the first anchor for the session). The pointer block (current task, its contract, the next task, progress, and the usage header) must be read last, so it is replaced rather than accumulated: each request drops the previous copy and appends the current one at the tail. An identical request adds nothing and stays byte-identical, which keeps retries warm.
+The policy stays at a verified history anchor. The pointer is frozen during an agent run, including its tool calls; the next run appends a fresh copy. Consequently its usage and task details can lag during a run. After `stateReanchorRequests` copies (default 12), the next copy re-anchors the policy and clears the old pointers. Zero disables the window reset. Policy changes, rewritten history and unsafe insertion points may reset sooner.
 
-### Why the pointer moves on every request
+### Why the pointer accumulates
 
-A prefix cache is a longest-common-prefix match: everything up to the first differing
-byte is reused, everything after it is billed as fresh input. That gives one cost model
-for every way of placing the pointer, parameterised by how often it moves.
+Appending preserves the earlier request prefix until a reset. Whether that prefix actually hits cache depends on the provider's cache boundaries, retention and timing; retained copies also add input tokens to later requests.
 
-Let `N` be the tokens a request adds (model output plus tool results), `P` the pointer
-size, and `C` the number of requests the pointer survives before it is re-placed
-(`C = 1` places it on every request; `C = k` places it once per turn of `k` requests).
-On the request that moves it, the content accumulated since the old anchor, the new
-content and the new pointer are all fresh; on the other `C - 1` requests everything but
-the new content is cached:
+The cost trade-off depends on the number and size of retained pointers, the history after the old anchor and the provider's actual cache hits. Request construction tests do not establish a savings figure.
 
-```
-cycle        = C·N + P                    (the moving request)
-             + (C-1)·N                    (the requests that keep it in place)
-per request  = ((2C-1)·N + P) / C
-excess vs C=1 = (C-1)·(N - P)
-```
+The extension's 1,000-transition corpus measures the structural half of this: pointer drops fall from one per fresh request to one per window, while the retained blocks stay bounded at `W + 1` (one policy block plus the window's copies).
 
-The `C = 1` case reduces to `N + P`, which is what this extension pays today, and the
-excess grows with `C - 1` on the left and with `N - P` on the right. Once `C > 1`, the
-factor `C-1` immediately delivers nearly all of the penalty; pushing `C` higher only
-smooths the remaining fraction.
+An earlier version of this document priced the opposite choice with a longest-common-prefix model that credited every shared byte with a cache hit. That model does not hold for providers that restore caching from complete persisted requests: a break at the pointer discards the reusable suffix behind it, not merely the bytes of the pointer. The figures in that argument are therefore not used here.
 
-Priced at DeepSeek's cache-hit/`miss` difference (`$0.294` per million tokens at the
-`deepseek-flash` rates in `request_costs.snapshot`: `$0.3/M` input against `$0.006/M`
-cache read), the net of moving less often is positive only when `N < 2P`:
-
-```
-net = requests × (1 - 1/C) × (2P - N) × $0.294/M
-```
-
-Measured on two real goal sessions (`N` ≈ 1,947 tokens per request, derived from an
-observed 2,187-token average miss at `P = 240`), moving the pointer once per turn
-instead of once per request costs `+$0.304` over 642 requests (`01a1c3ec`) and
-`+$0.125` over 251 requests (`01a1c464`) — 46% and 34% of those sessions' input bills.
-With the pointer already reduced to ≈90 tokens the same comparison is worse (`+$0.358`
-and `+$0.146`), because the smaller `P` raises `N - P`. Bucketing the usage header so
-the pointer text is byte-stable for several requests has the same trade-off at a smaller
-`C`, so it is not worth doing either; the only lever that holds `C = 1` and still cuts
-the bill is shrinking `P`, which is why the contract line is not repeated here.
-
-Replacing the pointer is the one deliberate cache break: the shared prefix ends at the policy block and the cost is the pointer itself, which would have been new content either way. The window reset is the expensive one, because everything between the old anchor and the tail loses its cache. Policy changes (including budget/run-limit removal), rewritten history, unsafe tool-result boundaries and an exhausted window reset retention; at most 16 session/model identities are tracked and no full-state tails are persisted. Older copies are historical, and the current policy takes precedence over cache reuse.
+The window reset is the expensive step, because everything between the old anchor and the tail loses its cache. Policy changes (including budget/run-limit removal), rewritten history, unsafe tool-result boundaries and an exhausted window reset retention; at most 16 session/model identities are tracked and no full-state tails are persisted. Older copies are historical, and the current policy takes precedence over cache reuse.
 
 Explicit-marker relocation skips all retained live text and tolerates Pi's trailing effort-only messages. Another extension's content-bearing suffix is left alone. Changing models/providers starts a separate retention identity. Unknown session identities do not retain history between requests.
 

@@ -224,3 +224,65 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
 - Consequence for scope: shrinking `P` is the only lever left; raising `C` is closed. The
   contract line was already removed from the pointer in `9d74dec`, and `stateReanchorRequests`
   was already raised to 128 in `b95a23d`; both stand, and no code changes here.
+
+## 2026-11-12 — the pointer accumulates instead of being replaced
+
+- The GPT fixed-cache investigation showed why replacing the pointer is expensive in a way
+  the old cost model missed: a provider that restores caching from complete persisted
+  requests cannot reuse a suffix once the block behind it changes, so replacing the pointer
+  every request ends the reusable prefix at the policy block and re-reads the model output
+  and tool results accumulated after that anchor.
+- Operator direction: append one copy per model stop, clean the copies up and re-anchor
+  after 12 of them, and on completion reset and re-insert at the latest position instead of
+  letting the block disappear. Created `feat/goal-pointer-per-turn` from `3e1cb35` for it.
+- `extensions/goal-live-retention.ts` now accumulates: an identical retry appends nothing,
+  a changed pointer appends one copy, the window counts copies (not requests) and resets at
+  `applies >= window`, and the resetting request does not consume budget. `MAX_STATE_REANCHOR_REQUESTS`
+  is 12 again; the decoded `stateReanchorRequests` setting still overrides it, `0` never resets.
+- `extensions/goal-events.ts` emits `[PI GOAL COMPLETE goalId=…]` for a completed goal so it
+  is re-anchored at the tail for the turn in which it is archived, rather than vanishing.
+- Gate bounds had to move with the model: `cache-report.mjs` derives `blockBound` from the
+  retention module (`MAX_STATE_REANCHOR_REQUESTS + 1`) and `cache-compare.mjs` bounds both
+  `pointerReplacements` and `policyAnchorMoves` by `ceil(transitions/window) + 1` while
+  requiring `pointerReplacements > 0`. A first attempt used a named import of the constant
+  and broke the pinned baseline tree, which does not export it; namespace access fixed it.
+- Corpus result over 1,000 transitions: 83 pointer replacements and 83 anchor moves (one per
+  window) versus 32 of each in the replaced-pointer baseline, with retained messages bounded
+  at 13. Gate PASS: 408 adapter scenarios, 288 exact approved deltas, 1,000 transitions.
+- Rejected during the work: a per-turn guard keyed on a host turn counter. It required
+  threading a turn identity through the retention call sites and rewiring three test files
+  to inject `turn_start`, and it changed nothing for the common case where a tool loop keeps
+  the same pointer text — the text comparison already deduplicates those requests.
+- Docs and spec rewritten to the accumulating model: `docs/prompt-caching.md` replaces the
+  "why the pointer moves on every request" argument (including the measured `+$0.304` /
+  `+$0.125` figures) with the append-versus-replace comparison and an explicit note that the
+  old longest-common-prefix pricing is not valid; `README.md:131`, `CHANGELOG.md:10`,
+  `PRODUCT.md` and `TECH.md` §1.3 track the new window and completion behavior.
+- Verification: `npm run check` and `npm run lint` pass; `npm test` 1244 tests, 1239 pass,
+  the 5 failures are the pre-existing widget keybinding mismatch from the untracked
+  `.pi/pi-goal-x-settings.json` (same 5 fail on unmodified `HEAD`).
+
+### 2026-11-12 — Correct pointer granularity to agent runs
+
+- The earlier changed-text-per-request implementation did not meet the requested model-stop boundary; the previous completion claim was incorrect. Pi emits `turn_end` after tool calls too, while `agent_end` marks the end of the complete agent run.
+- Track the run at `agent_start` per session/model. Freeze its pointer through the tool loop, append a fresh copy on the next run, and count copies even when their text matches. Policy or history safety resets still take precedence. Updated product and technical direction before the code.
+- Added retention and event-hook regressions for multiple requests per run, changed usage, identical pointers across runs and the 12-copy window. Isolated `test:all`: 1312/1312; typecheck, lint, cache gate and context gate pass. No provider requests were made; cache savings remain unmeasured.
+
+### 2026-11-12 — Pre-existing assertions re-expressed for appended copies
+
+- `tests/prompt-cache-sdk-worker.ts` had three assertions written for a replaced pointer
+  (`toggle preserves the implicit prefix` compared everything before the last message,
+  `the second advance adds only its own completed turn` expected `+1` element, and the
+  rebase check counted exactly one `Goal snapshot:`). They fail on unmodified `HEAD` as
+  well, so they were re-expressed for the appending model: each request must extend the
+  previous one verbatim, the second advance adds its completed turn plus one copy, the
+  earlier copy stays inside the shared prefix, and the rebound check bounds copies at
+  `window + 1` instead of requiring exactly one.
+- `tests/integration/extension.test.ts` menu-row count is `23`, not `22`: the settings menu
+  gained the policy re-anchor window row. Also reproduced as pre-existing on a clean
+  `HEAD`-only tree.
+- Full isolated run (tracked files + working diff, no `.pi`): `npm run test:all` 1309/1309
+  in 99 files, `npm run check` and `npm run lint` clean, `context:cache-gate` PASS (408
+  scenarios, 288 approved deltas, 1,000 transitions), `context:gate` PASS on 24 fixtures.
+- The 5 widget failures in the working checkout are the untracked user settings file, not
+  this branch; the isolated tree passes all 85 widget tests.
