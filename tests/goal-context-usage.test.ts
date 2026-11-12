@@ -58,6 +58,9 @@ for (const mode of ["ordinary", "audit", "wait"]) test(`registered context toggl
   for (const value of [true, false, true]) {
    mutateSettingsLayer({scope: "project", cwd: h.cwd, mutation: {op: "set", path: ["showContextUsage"], value}});
    base.push({role: "assistant", content: "work", timestamp: base.length + 1});
+   // The usage clock only moves inside a turn, so a fresh request without new
+   // usage replays the retained copy; nudge the gate open like a spent token.
+   if (value === false) base.push({role: "assistant", content: "more work", timestamp: base.length + 1});
    const next = await capture();
    assert.deepEqual(next.slice(0, previous.length - 1), previous.slice(0, -1), "only the pointer moves; history and the policy block stay literal");
    assert.equal(next.at(-1).content.includes("Context snapshot:"), value);

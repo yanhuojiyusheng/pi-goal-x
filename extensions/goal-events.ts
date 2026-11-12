@@ -68,6 +68,8 @@ export function registerGoalEvents(core: GoalCore): void {
 	// Transients are keyed per session: the context hook of session B must never
 	// overwrite the set that session A's provider request will consume.
 	const liveRetention = new LiveTailRetention();
+	let runSequence = 0;
+	const sessionRuns = new Map<string, number>();
 	const sessionKeyFor = (ctx?: ExtensionContext): string =>
 		ctx?.sessionManager?.getSessionId?.() ? JSON.stringify([ctx.sessionManager.getSessionId(), ctx.model?.provider, ctx.model?.id]) : "unidentified";
  type SessionOwner = {ctx: ExtensionContext; manager: ExtensionContext["sessionManager"]; storage: GoalStorageContext; keys: Set<string>};
@@ -105,17 +107,21 @@ export function registerGoalEvents(core: GoalCore): void {
 		if (sessionKey === "unidentified") liveRetention.clear(sessionKey);
 		const parts = currentGoalContextParts(ctx);
 		if (parts) {
-			// Retain the policy block verbatim at its anchor so this request extends
-			// the previous one instead of displacing it; the pointer is replaced at
-			// the tail. Only genuinely new text is appended.
-			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, pointer: parts.pointer, window: loadGoalSettings(ctx.cwd).stateReanchorRequests });
+			// Freeze the pointer across the agent's tool loop; append at the next run.
+			const { messages: retained } = liveRetention.apply(sessionKey, base, { state: parts.state, pointer: parts.pointer, window: loadGoalSettings(ctx.cwd).stateReanchorRequests, run: sessionRuns.get(sessionKey) });
 			return retained;
 		}
 		liveRetention.clear(sessionKey);
 		return messages;
 	});
 
-	pi.on("agent_start", async (_event, ctx) => { core.scheduler.begin(ctx); });
+	pi.on("agent_start", async (_event, ctx) => {
+		const key = sessionKeyFor(ctx);
+		sessionRuns.delete(key);
+		sessionRuns.set(key, ++runSequence);
+		if (sessionRuns.size > 16) sessionRuns.delete(sessionRuns.keys().next().value!);
+		core.scheduler.begin(ctx);
+	});
 	pi.on("message_start", async (event, ctx) => { core.scheduler.message(ctx, event.message); });
 	pi.on("turn_start", async (_event, ctx) => {
 		if (core.scheduler.isDenied()) return;
@@ -324,6 +330,7 @@ export function registerGoalEvents(core: GoalCore): void {
   if (outgoing) for (const key of outgoing.keys) {
    if (leases.get(key) !== outgoing) continue;
    liveRetention.clear(key);
+   sessionRuns.delete(key);
    leases.delete(key);
   }
   if (failure) throw failure;
@@ -452,7 +459,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	/** Request-only state: no live goal block, focus, or reminders enter the system prefix. */
-	/** Request-only goal state split into a rarely-changing policy block and a per-request pointer. Other branches are stable-only. */
+	/** Request-only goal state split into a rarely-changing policy block and a per-turn pointer. Other branches are stable-only. */
 	function currentGoalContextParts(ctx: ExtensionContext): { state: string; pointer?: string } | undefined {
 		const checkpoint = core.runtime.getCheckpointGoalId();
 		if (checkpoint !== null && (core.scheduler.isDenied() || !core.isActionableContinuationGoal(checkpoint))) {
@@ -475,7 +482,14 @@ export function registerGoalEvents(core: GoalCore): void {
 			}
 			return;
 		}
-		if (core.state.goal.status === "complete") return;
+		if (core.state.goal.status === "complete") {
+			// A completed goal keeps one block so the model can see what it finished,
+			// and the block rides at the tail of the turn that completed it. Retention
+			// resets on the changed policy text, so the completed copy is re-inserted
+			// at the newest history position instead of lingering at an old anchor.
+			const done = core.state.goal;
+			return { state: `[PI GOAL COMPLETE goalId=${done.id}]\n${untrustedObjectiveBlock(done)}\n\nThe objective is satisfied and the goal is complete. Do not start new work for it; it is archived at the end of this turn.` };
+		}
 		if (core.state.goal.status === "paused") {
 			const current = core.state.goal;
 			const pauseExtras: string[] = [];

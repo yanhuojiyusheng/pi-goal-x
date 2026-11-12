@@ -6,27 +6,52 @@ const msg = (role: string, content: string, timestamp: number): any => ({ role, 
 const contents = (messages: any[]): string[] => messages.map(message => message.content);
 const live = (messages: any[]): string[] => messages.filter(m => m.customType === "pi-goal-live-context").map(m => m.content);
 
-test("the pointer is replaced at the tail while the policy block stays anchored", () => {
+test("agent runs freeze the pointer across requests and append on the next run", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	const first = retention.apply("s", base, { state: "S", pointer: "P1", run: 1 });
+	base.push(msg("assistant", "tool call", 2), msg("toolResult", "result", 3));
+	const inRun = retention.apply("s", base, { state: "S", pointer: "P changed", run: 1 });
+	assert.deepEqual(live(inRun.messages), ["S", "P1"]);
+	assert.deepEqual(inRun.messages.slice(0, first.messages.length), first.messages);
+	assert.deepEqual(inRun.transientContents, ["S", "P1"]);
+	const next = retention.apply("s", base, { state: "S", pointer: "P changed", run: 2 });
+	assert.deepEqual(live(next.messages), ["S", "P1", "P changed"]);
+	assert.deepEqual(next.messages.slice(0, inRun.messages.length), inRun.messages);
+});
+
+test("the run window counts copies even when pointer text is identical", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	for (let run = 1; run <= 12; run++) {
+		base.push(msg("assistant", `run ${run}`, run + 1));
+		const result = retention.apply("s", base, { state: "S", pointer: "P", run });
+		assert.equal(live(result.messages).length, run + 1);
+	}
+	base.push(msg("assistant", "run 13", 14));
+	assert.deepEqual(live(retention.apply("s", base, { state: "S", pointer: "P", run: 13 }).messages), ["S", "P"]);
+});
+
+test("each new pointer is appended after the previous copy while the policy block stays anchored", () => {
 	const retention = new LiveTailRetention();
 	const base1 = [msg("user", "h", 1)];
 	assert.deepEqual(contents(retention.apply("s", base1, { state: "S", pointer: "P1" }).messages), ["h", "S", "P1"]);
 	const base2 = [...base1, msg("assistant", "a", 2)];
-	assert.deepEqual(contents(retention.apply("s", base2, { state: "S", pointer: "P2" }).messages), ["h", "S", "a", "P2"]);
+	assert.deepEqual(contents(retention.apply("s", base2, { state: "S", pointer: "P2" }).messages), ["h", "S", "P1", "a", "P2"]);
 	const base3 = [...base2, msg("assistant", "b", 3)];
-	assert.deepEqual(contents(retention.apply("s", base3, { state: "S", pointer: "P3" }).messages), ["h", "S", "a", "b", "P3"]);
+	assert.deepEqual(contents(retention.apply("s", base3, { state: "S", pointer: "P3" }).messages), ["h", "S", "P1", "a", "P2", "b", "P3"]);
 });
 
-test("only one pointer copy is ever retained", () => {
+test("every pointer copy is retained until the window drops them together", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
 	let out: any[] = [];
-	for (let i = 0; i < 10; i++) {
+	for (let i = 0; i < 5; i++) {
 		base.push(msg("assistant", `a${i}`, i + 2));
-		out = retention.apply("s", base, { state: "S", pointer: `P${i}` }).messages;
+		out = retention.apply("s", base, { state: "S", pointer: `P${i}`, window: 3 }).messages;
 	}
-	assert.equal(live(out).filter(c => c.startsWith("P")).length, 1, "stale pointers are dropped, never accumulated");
-	assert.equal(out.at(-1).content, "P9", "the newest pointer rides at the tail");
-	assert.deepEqual(retention.contents("s"), ["S", "P9"]);
+	assert.deepEqual(live(out).filter(c => c.startsWith("P")), ["P3", "P4"], "the exhausted window dropped the older copies");
+	assert.equal(live(out).filter(c => c === "S").length, 1, "stale policy copies are never accumulated");
 });
 
 test("unchanged content across repeats and advances adds zero blocks", () => {
@@ -55,39 +80,37 @@ test("a changed policy block drops stale blocks and starts a fresh tail", () => 
 	assert.deepEqual(contents(retention.apply("s", base, { state: "S2", pointer: "P2" }).messages), ["h", "S2", "P2"]);
 });
 
-test("the policy block is re-anchored once per window of requests", () => {
+test("the policy block is re-anchored once per window of appended pointers", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
+	const window = MAX_STATE_REANCHOR_REQUESTS;
 	const positions: number[] = [];
-	for (let i = 1; i <= MAX_STATE_REANCHOR_REQUESTS * 2; i++) {
+	for (let i = 1; i <= window * 2 + 1; i++) {
 		// History grows every request, so a frozen anchor and a re-anchored one land
 		// on different indexes instead of both being the tail of a static array.
 		base.push(msg("assistant", `turn ${i}`, i + 1));
 		const out = retention.apply("s", base, { state: "S", pointer: `P${i}` }).messages;
 		positions.push(out.findIndex(m => m.content === "S"));
-		assert.equal(live(out).filter(content => content === "S").length, 1, "the old copy is dropped, never duplicated");
+		assert.equal(live(out).filter(content => content === "S").length, 1, "the old policy copy is dropped, never duplicated");
 	}
-	const window = MAX_STATE_REANCHOR_REQUESTS;
 	// Request 1 sees one user message plus one pushed turn, so the policy block is
-	// appended at index 2 and stays there while history grows past it.
+	// appended at index 2 and stays there while pointers accumulate behind it.
 	assert.equal(positions[0], 2, "the first request anchors the policy block at the tail");
-	assert.equal(positions[window - 2], 2, "the anchor does not move between windows");
-	assert.equal(positions[window], 1 + window, "the next request keeps the new anchor");
-	assert.equal(positions[window - 1], 1 + window, "the exhausted window re-anchors it at the current tail");
-	assert.equal(positions[2 * window - 1], 1 + 2 * window, "the following window re-anchors again");
-	assert.ok(positions[window - 1]! > positions[window - 2]!, "the re-anchor moves the block later");
+	assert.equal(positions[window - 1], 2, "the anchor does not move while the window fills");
+	assert.equal(positions[window], 1 + (window + 1), "the first pointer past the window re-anchors it");
+	assert.equal(positions[2 * window], 1 + (2 * window + 1), "the following window re-anchors again");
 });
 
-test("an identical retry never advances the re-anchor window", () => {
+test("an identical pointer never advances the re-anchor window", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
 	const first = retention.apply("s", base, { state: "S", pointer: "P1" }).messages;
-	// A retry of the same request must be byte-identical: a reset here would
-	// break the warm prefix exactly when a retry needs it most.
+	// A retry of the same request must be byte-identical: reappending or a reset
+	// here would break the warm prefix exactly when a retry needs it most.
 	for (let i = 0; i < MAX_STATE_REANCHOR_REQUESTS * 2; i++) {
 		assert.deepEqual(retention.apply("s", base, { state: "S", pointer: "P1" }).messages, first);
 	}
-	assert.deepEqual(contents(retention.apply("s", base, { state: "S", pointer: "P2" }).messages), ["h", "S", "P2"]);
+	assert.deepEqual(contents(retention.apply("s", base, { state: "S", pointer: "P2" }).messages), ["h", "S", "P1", "P2"]);
 });
 
 test("an explicit window overrides the default; 0 never re-anchors", () => {
@@ -105,9 +128,10 @@ test("an explicit window overrides the default; 0 never re-anchors", () => {
 	};
 	const custom = run(3, 7);
 	assert.equal(custom[0], 2, "the first request anchors at the tail");
-	assert.equal(custom[2], 4, "window 3 re-anchors on the third fresh request");
-	assert.equal(custom[3], 4, "and again only at the end of the next window");
-	assert.equal(custom[5], 7, "the following window re-anchors at the new tail");
+	assert.equal(custom[2], 2, "three appended copies fill the window without moving the anchor");
+	assert.equal(custom[3], 5, "the first pointer past the window re-anchors at the current tail");
+	assert.equal(custom[5], 5, "the next window fills without moving the anchor");
+	assert.equal(custom[6], 8, "the third window re-anchors at the new tail");
 	assert.deepEqual(run(MAX_STATE_REANCHOR_REQUESTS, 8), run(undefined, 8), "an explicit default window matches the omitted one");
 	const frozen = run(0, 100);
 	assert.ok(frozen.every(index => index === 2), "window 0 keeps the first anchor for the whole session");
@@ -121,7 +145,6 @@ test("sessions are tracked independently", () => {
 	assert.deepEqual(contents(retention.apply("b", base, { state: "SB", pointer: "PB" }).messages), ["h", "SB", "PB"]);
 	assert.deepEqual(contents(retention.apply("a", base, { state: "SA", pointer: "PA" }).messages), ["h", "SA", "PA"]);
 });
-
 test("null fresh clears the session so the next request starts over", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
@@ -138,7 +161,7 @@ test("transient contents cover retained and fresh blocks for marker relocation",
 	const base = [msg("user", "h", 1)];
 	retention.apply("s", base, { state: "S", pointer: "P1" });
 	const advanced = [...base, msg("assistant", "a", 2)];
-	assert.deepEqual(retention.apply("s", advanced, { state: "S", pointer: "P2" }).transientContents, ["S", "P2"]);
+	assert.deepEqual(retention.apply("s", advanced, { state: "S", pointer: "P2" }).transientContents, ["S", "P1", "P2"]);
 });
 
 test("a retained block never splits a tool-call batch when history diverges", () => {
@@ -155,13 +178,14 @@ test("a retained block never splits a tool-call batch when history diverges", ()
 	assert.deepEqual(roles.slice(-2), ["custom", "custom"], "live state rides at the tail");
 });
 
-test("a thousand changing requests keep a fixed wire footprint", () => {
+test("a thousand changing requests keep a bounded wire footprint", () => {
 	const retention = new LiveTailRetention();
 	const base: unknown[] = [{ role: "user", content: "start" }];
 	for (let i = 0; i < 1000; i++) {
 		base.push({ role: "assistant", content: `turn ${i}` });
 		const out = retention.apply("s", base, { state: "S", pointer: `Snapshot ${i}: ${"x".repeat(180)}` });
-		assert.equal(live(out.messages as any[]).length, 2, "policy block plus exactly one pointer");
+		assert.equal(live(out.messages as any[]).filter(content => content === "S").length, 1, "one policy block");
+		assert.ok(live(out.messages as any[]).length <= MAX_STATE_REANCHOR_REQUESTS + 1, "pointer copies stay bounded by the window");
 		assert.equal((out.messages.at(-1) as { content: string }).content, `Snapshot ${i}: ${"x".repeat(180)}`);
 	}
 });
@@ -231,7 +255,7 @@ test("image and large tool-output edits invalidate hashes without changing store
 	assert.equal(base.length, 2);
 });
 
-test("an unchanged request keeps its single pointer in place instead of re-appending", () => {
+test("an unchanged request keeps its retained copies instead of re-appending", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
 	const fresh = { state: "S", pointer: "P" };

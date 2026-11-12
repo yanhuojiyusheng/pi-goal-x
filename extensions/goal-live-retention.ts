@@ -5,12 +5,13 @@ import { asRecord } from "./goal-record.ts";
  * Request-only goal state, injected per provider request and never persisted.
  *
  * Two blocks ride along: the policy block (objective, rules, task tree) and the
- * pointer block (current task, its contract, the next one). They have opposite
- * needs. The policy block is large and stable, so it is retained verbatim at the
- * anchor where it was placed — replaying it costs nothing and keeps the prefix
- * literal. The pointer block is small and must sit where the model reads last,
- * so it is replaced rather than accumulated: each request drops the previous
- * copy and appends the current one at the tail.
+ * pointer block (current task, its contract, the next one, the usage clock).
+ * They have opposite needs. The policy block is large and stable, so it is
+ * retained verbatim at the anchor where it was placed, keeping the prefix
+ * literal. Each agent run appends one pointer copy after the previous ones: the
+ * retained pointer copies form one growing tail, so a request extends the cached
+ * prefix by a pointer instead of cutting it off and re-reading everything that
+ * follows.
  *
  * Every request verifies the preceding history by digest and re-inserts retained
  * blocks at their anchors. A policy change, a history rewrite (compaction,
@@ -18,13 +19,11 @@ import { asRecord } from "./goal-record.ts";
  * insertion point, or an exhausted window all perform one documented full reset
  * instead of silently shifting the prefix or corrupting message structure.
  *
- * Replacing the pointer is the one deliberate cache break: the previous copy is
- * dropped from inside the history, so the shared prefix ends at the policy
- * block. The token sequence after that block is unchanged, so the cost is the
- * pointer itself, which would have been new content either way. The window
- * reset is the expensive one: it moves the policy block, and everything between
- * the old anchor and the tail loses its cache once per
- * `MAX_STATE_REANCHOR_REQUESTS` requests.
+ * The accumulating pointer is why the window exists. Every copy extends the
+ * cacheable prefix, but the copies also pile up, and only a reset can drop them:
+ * it moves the policy block to the tail and re-reads everything between the old
+ * anchor and the tail exactly once. That is one documented break per window
+ * instead of one break per request.
  */
 
 export const LIVE_CONTEXT_TYPE = "pi-goal-live-context";
@@ -44,27 +43,30 @@ export interface LiveMessage {
 export const MAX_TRACKED_SESSIONS = 16;
 
 /**
- * The retained policy block falls further behind the newest turn as history
- * grows, and moving it later costs one cache break of everything between its old
- * anchor and the tail. Re-anchor it once per window of pointer changes; the
- * pointer block needs no window because it is replaced every request.
+ * Pointer copies retained before the policy block re-anchors.
+ *
+ * Each copy extends the cached prefix, so a larger window wastes fewer reads;
+ * each copy also costs its own tokens on every later request, so a smaller
+ * window wastes fewer bytes. The reset that ends a window is the one expensive
+ * event: it moves the policy block to the tail and everything between its old
+ * anchor and the tail loses its cache once.
  *
  * This is the default of the `stateReanchorRequests` setting. Zero there disables
- * re-anchoring entirely, so the policy block keeps its first anchor for the life
- * of the session.
+ * re-anchoring entirely, so the policy block keeps its first anchor and the
+ * pointer copies accumulate for the life of the session.
  *
- * Only requests that carry fresh content advance the window: an identical retry
- * must stay byte-identical, and a retry is exactly when a warm prefix matters
- * most. The request that performs the reset does not consume window budget, so a
- * window is exactly this many fresh requests.
+ * Only a new pointer copy advances the window. The first copy after a reset
+ * counts toward the new window; retries inside the same run add no copy.
  */
-export const MAX_STATE_REANCHOR_REQUESTS = 128;
+export const MAX_STATE_REANCHOR_REQUESTS = 12;
 
 export interface FreshLiveTails {
 	state: string;
 	pointer?: string | undefined;
-	/** Fresh-content requests between policy re-anchors; 0 never re-anchors. */
+	/** Appended pointer copies between policy re-anchors; 0 never re-anchors. */
 	window?: number | undefined;
+	/** Agent-run identity; requests in the same run reuse the retained pointer. */
+	run?: number | undefined;
 }
 
 interface RetainedTail {
@@ -79,12 +81,9 @@ interface SessionRetention {
 	lastFresh: FreshLiveTails | undefined;
 	/** Digest of every base message at the last apply; any earlier rewrite resets. */
 	baseFingerprints: Array<string | null>;
-	/** Fresh-content requests since the retained blocks were last anchored. */
+	/** Pointer copies appended since the retained blocks were last anchored. */
 	applies: number;
-}
-
-function freshBlocks(fresh: FreshLiveTails): string[] {
-	return fresh.pointer === undefined ? [fresh.state] : [fresh.state, fresh.pointer];
+	lastRun: number | undefined;
 }
 
 /** Full-message digest, or null (never a match) when serialization fails. */
@@ -145,7 +144,7 @@ export class LiveTailRetention {
 		const fingerprints = base.map(fingerprintMessage);
 		let session = this.sessions.get(sessionKey);
 		if (!session) {
-			session = { tails: [], lastFresh: undefined, baseFingerprints: [], applies: 0 };
+			session = { tails: [], lastFresh: undefined, baseFingerprints: [], applies: 0, lastRun: undefined };
 			if (this.sessions.size >= MAX_TRACKED_SESSIONS) {
 				const oldest = this.sessions.keys().next();
 				if (!oldest.done) this.sessions.delete(oldest.value);
@@ -157,12 +156,13 @@ export class LiveTailRetention {
 			session!.lastFresh = undefined;
 			session!.baseFingerprints = [];
 			session!.applies = 0;
+			session!.lastRun = undefined;
 		};
+		// Resetting clears `lastFresh` as well, so this runs before any use of it.
 		// A changed state block supersedes every previously sent tail: start
 		// fresh rather than leave a stale objective or a cancelled scheduling
 		// instruction lingering mid-history.
-		if (session.lastFresh !== undefined && (session.lastFresh.state !== fresh.state
-			|| (session.lastFresh.pointer !== undefined && fresh.pointer === undefined))) reset();
+		if (session.lastFresh !== undefined && session.lastFresh.state !== fresh.state) reset();
 		// Tails anchored while history was empty would linger at the head once
 		// real history arrives. Reset once so fresh tails anchor at the tail.
 		if (session.tails.length > 0 && session.baseFingerprints.length === 0 && base.length > 0) reset();
@@ -193,43 +193,41 @@ export class LiveTailRetention {
 			valid++;
 		}
 		if (valid < session.tails.length) reset();
-		const blocks = freshBlocks(fresh);
-		// Append only the suffix that differs from the last emitted tails, so
-		// unchanged content across repeats, tool loops, and history advances
-		// adds zero blocks while keeping the prefix literal.
-		const previous = session.lastFresh === undefined ? [] : freshBlocks(session.lastFresh);
-		let shared = 0;
-		while (shared < blocks.length && shared < previous.length && blocks[shared] === previous[shared]) shared++;
-		// The window counts fresh content, not raw applies: an identical retry
-		// must replay byte for byte, so it never advances toward a reset. The
-		// request that performs the reset does not consume window budget, so a
-		// window is exactly `window` fresh requests. Zero never re-anchors.
-		if (shared < blocks.length) {
+		// The policy block is the head of the tail and never accumulates: a
+		// changed policy, a vanished pointer, or contextless history all restart
+		// from a fresh state block at the current tail.
+		const retainedState = session.tails[0];
+		if (retainedState !== undefined && (retainedState.content !== fresh.state || fresh.pointer === undefined)) reset();
+		// A run appends one pointer on its first request; further requests in that
+		// run reuse it. The next copy after a full window starts a new window.
+		const previousPointer = session.tails.at(-1)?.content;
+		const pointerChanged = fresh.pointer !== undefined && (fresh.run === undefined
+			? fresh.pointer !== previousPointer
+			: fresh.run !== session.lastRun || session.tails.length === 0);
+		if (pointerChanged) {
 			const window = fresh.window ?? MAX_STATE_REANCHOR_REQUESTS;
-			if (window > 0 && session.tails.length > 0 && session.applies + 1 >= window) {
-				reset();
-				shared = 0;
-			} else {
-				session.applies += 1;
-			}
+			if (window > 0 && session.tails.length > 0 && session.applies >= window) reset();
 		}
-		// The pointer is replaced, not accumulated: drop the previous copy so only
-		// one rides at the tail. An unchanged request keeps what it already has.
-		if (shared < blocks.length) session.tails = session.tails.filter(tail => tail.kind === "goal-state");
 		const messages: Array<T | LiveMessage> = [...base];
 		for (let i = session.tails.length - 1; i >= 0; i--) {
 			const tail = session.tails[i]!;
 			messages.splice(tail.anchorIndex, 0, makeLiveMessage(tail.content));
 		}
-		for (let i = shared; i < blocks.length; i++) {
-			const content = blocks[i]!;
-			const kind: LiveTailKind = i === 0 ? "goal-state" : "goal-pointer";
-			messages.push(makeLiveMessage(content));
-			session.tails.push({ anchorIndex: base.length, anchorFingerprint: fingerprints.at(-1) ?? null, content, kind });
+		// A reset above cleared the tails, so a fresh policy block is appended
+		// again; otherwise only the new pointer copy rides at the tail.
+		if (session.tails.length === 0) {
+			messages.push(makeLiveMessage(fresh.state));
+			session.tails.push({ anchorIndex: base.length, anchorFingerprint: fingerprints.at(-1) ?? null, content: fresh.state, kind: "goal-state" });
+		}
+		if (fresh.pointer !== undefined && pointerChanged) {
+			messages.push(makeLiveMessage(fresh.pointer));
+			session.tails.push({ anchorIndex: base.length, anchorFingerprint: fingerprints.at(-1) ?? null, content: fresh.pointer, kind: "goal-pointer" });
+			session.applies += 1;
+			session.lastRun = fresh.run;
 		}
 		session.baseFingerprints = fingerprints;
 		session.lastFresh = { state: fresh.state, pointer: fresh.pointer };
-		return { messages, transientContents: [...new Set([...session.tails.map(tail => tail.content), ...blocks])] };
+		return { messages, transientContents: [...new Set(session.tails.map(tail => tail.content))] };
 	}
 
 	contents(sessionKey: string): string[] | undefined {

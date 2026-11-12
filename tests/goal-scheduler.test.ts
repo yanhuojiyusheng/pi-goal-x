@@ -787,6 +787,25 @@ test("a goal saved with decision.nextAction loads and strips the field", () => {
 	assert.equal(normalizeGoalScheduler({ ...legacy, decision: { kind: "ready", purpose: "bogus" } })?.phase, "interrupted", "an invalid decision is still rejected");
 });
 
+test("prompt cache freezes the pointer through a tool loop and refreshes it on the next agent run", async t => {
+ const h = await fixture(t);
+ const history: any[] = [{role: "user", content: "Work on the goal", timestamp: 1}];
+ const request = async () => (await h.handlers.context_with_system!({messages: history}, h.ctx)).messages as any[];
+ await h.handlers.agent_start!({}, h.ctx);
+ const first = await request();
+ h.core.state.goal!.usage.tokensUsed = 12345;
+ history.push({role: "assistant", content: [{type: "toolCall", id: "c", name: "read", arguments: {}}], timestamp: 2}, {role: "toolResult", toolCallId: "c", content: [{type: "text", text: "result"}], timestamp: 3});
+ const inside = await request();
+ assert.deepEqual(inside.slice(0, first.length), first);
+ assert.equal(inside.filter(m => m.customType === "pi-goal-live-context").length, 2);
+ assert.doesNotMatch(JSON.stringify(inside), /12345 tokens/);
+ await h.handlers.agent_start!({}, h.ctx);
+ const next = await request();
+ assert.deepEqual(next.slice(0, inside.length), inside);
+ assert.equal(next.filter(m => m.customType === "pi-goal-live-context").length, 3);
+ assert.match(next.at(-1).content, /12345 tokens/);
+});
+
 test("prompt cache: normal and custom runs preserve history while refreshing all live goal state", async t => {
  const h = await fixture(t);
  const history: any[] = [{role: "user", content: "Work on the goal", timestamp: 1}];
@@ -794,6 +813,9 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  const request = async () => (await h.handlers.context_with_system!({messages: history}, h.ctx)).messages;
  const preflight = await h.handlers.before_agent_start!({prompt: "continue", systemPrompt: "host policy"}, h.ctx);
  assert.equal(preflight, undefined, "goal state never rewrites the system prefix");
+ // Each request is its own turn, so the pointer accumulates instead of being
+ // replaced: the policy block stays anchored and every stop appends one copy.
+ h.handlers.turn_start?.({turnIndex: 1, timestamp: Date.now()}, h.ctx);
  const first = await request();
  assert.deepEqual(first.slice(0, -2), original, "stable policy and the next-step pointer ride as two request-only tails");
  assert.equal(first.filter((m: any) => m.customType === "pi-goal-live-context").length, 2);
@@ -809,16 +831,18 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  const toolCall = {role: "assistant", content: [{type: "toolCall", id: "call-1", name: "read", arguments: {path: "README.md"}}], timestamp: 2};
  const toolResult = {role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{type: "text", text: "file contents"}], isError: false, timestamp: 3};
  history.push(toolCall, toolResult);
+ h.handlers.turn_start?.({turnIndex: 2, timestamp: Date.now()}, h.ctx);
  const second = await request();
- assert.deepEqual(second.slice(0, first.length - 1), first.slice(0, -1), "history and the policy block stay literal; only the pointer moves");
- assert.deepEqual(second.slice(2, 4), [toolCall, toolResult], "tool call and result stay adjacent");
+ assert.deepEqual(second.slice(0, first.length), first, "history and the policy block stay literal; the previous pointer is retained");
+ assert.deepEqual(second.slice(first.length, first.length + 2), [toolCall, toolResult], "tool call and result stay adjacent behind the previous pointer");
  assert.match(second[1].content, /PI GOAL ACTIVE/);
- assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 2, "the previous pointer is replaced, never accumulated");
+ assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 3, "each stop appends one pointer copy and keeps the older ones");
  assert.match(second.at(-1).content, /12345 tokens/, "usage lives in the pointer header: it is the clock that keeps the pointer at the tail");
  assert.ok(!JSON.stringify(second).includes("Autonomous runs"), "an unlimited allowance reports no runs line");
  // An objective edit changes the stable policy block: retention resets once so no
  // stale objective lingers mid-history, and the fresh pair anchors the new prefix.
  h.core.state.goal!.objective = "Changed objective";
+ h.handlers.turn_start?.({turnIndex: 3, timestamp: Date.now()}, h.ctx);
  const third = await request();
  assert.equal(third.filter((m: any) => m.customType === "pi-goal-live-context").length, 2);
  assert.deepEqual(third.slice(0, 3), history);
@@ -827,12 +851,14 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
  h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
  for (let i = 0; i < 4; i++) {
   history.push({role: "custom", customType: "pi-goal-event", content: "legacy full prompt", details: {goalId: h.core.state.goal!.id, kind: "checkpoint"}, timestamp: i + 4});
+  h.core.state.goal!.usage.tokensUsed += 1;
+  h.handlers.turn_start?.({turnIndex: 4 + i, timestamp: Date.now()}, h.ctx);
   const current = await request();
-  assert.deepEqual(current.slice(0, third.length - 1), third.slice(0, -1));
-  assert.equal(current.filter((m: any) => m.customType === "pi-goal-live-context").length, 2, "retained tails are re-sent in place, never duplicated per request");
+  assert.deepEqual(current.slice(0, third.length), third);
+  assert.equal(current.filter((m: any) => m.customType === "pi-goal-live-context").length, 3 + i, "each stop appends one more retained pointer");
   const before = current.slice(0, -1);
   const again = await request();
-  assert.deepEqual(again.slice(0, -1), before);
+  assert.deepEqual(again.slice(0, -1), before, "a repeated request inside the same turn adds nothing");
  }
  assert.deepEqual(history[0], original[0], "request transforms never mutate stored history");
  for (const status of ["paused", "blocked", "budget_limited"] as const) {
