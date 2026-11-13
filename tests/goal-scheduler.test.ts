@@ -787,6 +787,55 @@ test("a goal saved with decision.nextAction loads and strips the field", () => {
 	assert.equal(normalizeGoalScheduler({ ...legacy, decision: { kind: "ready", purpose: "bogus" } })?.phase, "interrupted", "an invalid decision is still rejected");
 });
 
+test("completing the displayed current task refreshes the block within the same run", async t => {
+ const h = await fixture(t, undefined, "owner", undefined, false);
+ h.core.goalService.apply(h.ctx, {mutate: g => ({...g, currentTaskId: "one", taskList: {proposedAt: new Date().toISOString(), tasks: [{id: "one", title: "First task", status: "pending"}, {id: "two", title: "Second task", status: "pending"}], blockCompletion: false}})});
+ const history: any[] = [{role: "user", content: "work", timestamp: 1}];
+ const request = async () => (await h.handlers.context_with_system!({messages: history}, h.ctx)).messages as any[];
+ const first = await request();
+ assert.match(first.at(-1).content, /taskId=one/);
+ const result = await h.tools.get("update_goal_task").execute("call", {task_id: "one", status: "complete"}, undefined, undefined, h.ctx);
+ assert.match(result.content[0].text, /one complete/);
+ history.push({role: "assistant", content: "completed task", timestamp: 2}, {role: "toolResult", content: "one complete", timestamp: 3});
+ const next = await request();
+ assert.deepEqual(next.slice(0, history.length), history);
+ assert.doesNotMatch(next.at(-1).content, /taskId=one/);
+ assert.match(next.at(-1).content, /1\/2 complete/);
+ history.push({role: "assistant", content: "continued", timestamp: 4});
+ const repeated = await request();
+ assert.deepEqual(repeated.slice(0, next.length), next, "the completion resets only once");
+});
+
+test("other or failed task completion keeps the current block frozen", async t => {
+ const h = await fixture(t, undefined, "owner", undefined, false);
+ h.core.goalService.apply(h.ctx, {mutate: g => ({...g, currentTaskId: "one", taskList: {proposedAt: new Date().toISOString(), tasks: [{id: "one", title: "First task", status: "pending", verificationContract: "Evidence required"}, {id: "two", title: "Second task", status: "pending"}], blockCompletion: false}})});
+ const history: any[] = [{role: "user", content: "work", timestamp: 1}];
+ const request = async () => (await h.handlers.context_with_system!({messages: history}, h.ctx)).messages as any[];
+ const first = await request();
+ const failed = await h.tools.get("update_goal_task").execute("bad", {task_id: "one", status: "complete"}, undefined, undefined, h.ctx);
+ assert.match(failed.content[0].text, /evidence/i);
+ const other = await h.tools.get("update_goal_task").execute("other", {task_id: "two", status: "complete"}, undefined, undefined, h.ctx);
+ assert.match(other.content[0].text, /two complete/);
+ history.push({role: "assistant", content: "work", timestamp: 2});
+ const next = await request();
+ assert.equal(next[1].content, first[1].content);
+ assert.equal(next.at(-1), history.at(-1));
+});
+
+test("completing an actionable child refreshes a block focused on its parent", async t => {
+ const h = await fixture(t, undefined, "owner", undefined, false);
+ h.core.goalService.apply(h.ctx, {mutate: g => ({...g, currentTaskId: "parent", taskList: {proposedAt: new Date().toISOString(), tasks: [{id: "parent", title: "Parent", status: "pending", subtasks: [{id: "child", title: "Child", status: "pending"}, {id: "next", title: "Next", status: "pending"}]}], blockCompletion: false}})});
+ const history: any[] = [{role: "user", content: "work", timestamp: 1}];
+ const request = async () => (await h.handlers.context_with_system!({messages: history}, h.ctx)).messages as any[];
+ assert.match((await request()).at(-1).content, /taskId=child/);
+ const result = await h.tools.get("update_goal_task").execute("call", {task_id: "child", status: "complete"}, undefined, undefined, h.ctx);
+ assert.match(result.content[0].text, /child complete/);
+ history.push({role: "assistant", content: "completed child", timestamp: 2});
+ const next = await request();
+ assert.deepEqual(next.slice(0, history.length), history);
+ assert.match(next.at(-1).content, /taskId=next/);
+});
+
 test("prompt cache: normal and custom runs preserve history while refreshing all live goal state", async t => {
  const h = await fixture(t);
  const history: any[] = [{role: "user", content: "Work on the goal", timestamp: 1}];

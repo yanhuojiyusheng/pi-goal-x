@@ -26,8 +26,10 @@ import { invalidateGoalPoolCache } from "./storage/goal-files.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
 import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";
 import { LiveTailRetention } from "./goal-live-retention.ts";
+import { taskIndex } from "./goal-task-index.ts";
 import {
 	goalPromptParts,
+	focusedTask,
 	staleContinuationPrompt,
 	unfocusedOpenGoalsPrompt,
 	untrustedObjectiveBlock,
@@ -109,12 +111,17 @@ export function registerGoalEvents(core: GoalCore): void {
 			// Lifecycle transitions and one-shot warnings must not be hidden.
 			const block = parts.pointer === undefined ? parts.state : `${parts.state}\n${parts.pointer}`;
 			const previous = liveRetention.contents(sessionKey)?.[0];
+			const retainedTaskId = liveRetention.taskId(sessionKey);
+			if (retainedTaskId && core.state.goal?.status === "active" && taskIndex(core.state.goal.taskList?.tasks).byId.get(retainedTaskId)?.status === "complete") {
+				liveRetention.clear(sessionKey);
+			}
 			const identity = (text: string) => text.match(/^\[PI GOAL (?:ACTIVE|PAUSED|BLOCKED|BUDGET LIMITED) goalId=[^\]\s]+/)?.[0];
 			if (previous && (identity(previous) !== identity(block) ||
 				["[POST-COMPACTION RESYNC", "[GOAL STALLED", "[AUDITOR REJECTION", "[TOKEN BUDGET REACHED"].some(marker => block.includes(marker) && !previous.includes(marker)))) {
 				liveRetention.clear(sessionKey);
 			}
-			const { messages: retained } = liveRetention.apply(sessionKey, base, { block });
+			const current = core.state.goal?.status === "active" ? focusedTask(core.state.goal, loadGoalSettings(ctx.cwd)) : undefined;
+			const { messages: retained } = liveRetention.apply(sessionKey, base, { block, taskId: current?.status === "pending" ? current.id : undefined });
 			return retained;
 		}
 		liveRetention.clear(sessionKey);

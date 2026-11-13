@@ -144,7 +144,7 @@ function taskAncestors(task: GoalTask, index: TaskIndex): GoalTask[] {
  return result;
 }
 
-function focusedTask(goal: GoalRecord, settings?: GoalSettings): GoalTask | undefined {
+export function focusedTask(goal: GoalRecord, settings?: GoalSettings): GoalTask | undefined {
  if (settings?.disableTasks || !goal.currentTaskId) return undefined;
  const focused = taskIndex(goal.taskList?.tasks).byId.get(goal.currentTaskId);
  return focused && actionableTask(focused);

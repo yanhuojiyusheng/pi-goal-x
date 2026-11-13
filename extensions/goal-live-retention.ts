@@ -25,6 +25,7 @@ export const MAX_STATE_REANCHOR_REQUESTS = 0;
 export interface FreshLiveBlock {
 	/** The complete request-only block: policy text followed by the pointer. */
 	block: string;
+	taskId?: string | undefined;
 }
 
 function makeLiveMessage(content: string): LiveMessage {
@@ -38,7 +39,7 @@ function makeLiveMessage(content: string): LiveMessage {
 }
 
 export class LiveTailRetention {
-	private readonly blocks = new Map<string, { block: string; length: number; fingerprint: string }>();
+	private readonly blocks = new Map<string, { block: string; taskId?: string | undefined; length: number; fingerprint: string }>();
 
 	apply<T>(sessionKey: string, base: readonly T[], fresh: FreshLiveBlock | null): { messages: Array<T | LiveMessage>; transientContents: string[] } {
 		if (fresh === null) {
@@ -55,10 +56,14 @@ export class LiveTailRetention {
 		if (!retained || retained.length === 0 || retained.length > base.length ||
 			fingerprint(base.slice(0, retained.length)) !== retained.fingerprint ||
 			(nextRole !== undefined && ["toolResult", "tool", "tool_result"].includes(nextRole))) {
-			retained = { block: fresh.block, length: base.length, fingerprint: fingerprint(base) };
+			retained = { block: fresh.block, taskId: fresh.taskId, length: base.length, fingerprint: fingerprint(base) };
 			this.blocks.set(sessionKey, retained);
 		}
 		return { messages: [...base.slice(0, retained.length), makeLiveMessage(retained.block), ...base.slice(retained.length)], transientContents: [retained.block] };
+	}
+
+	taskId(sessionKey: string): string | undefined {
+		return this.blocks.get(sessionKey)?.taskId;
 	}
 
 	contents(sessionKey: string): string[] | undefined {
