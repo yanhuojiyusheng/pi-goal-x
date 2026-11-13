@@ -1,6 +1,10 @@
 # Technical plan
 
-## Per-agent-run retention (2026-11-11)
+## Current task completion refresh (2026-11-13)
+
+Record the actionable task ID alongside the retained block, and check its latest task status before reuse. When it becomes complete, clear retention and anchor the fresh block after the current request history, preserving tool-call/result adjacency. This uses authoritative task state rather than tool-result text, handles nested tasks and cannot reset for a failed completion or a different task. Test actual tool execution and the next request within a single run, including negative cases. No live cache-hit claim.
+
+## Per-agent-run retention (2026-11-11; see completion exception above)
 
 Retain the first block and an immutable fingerprint of the preceding history per session/model; insert the same block at that boundary on subsequent requests. Reset at `agent_end`, so the next request constructs a new block. Re-anchor if preceding history changes, or if the boundary would split a tool-call batch. Clear state on deactivation and session teardown. Test stable prefix, refresh, history edits, and tool boundaries; actual GPT caching remains to be measured.
 

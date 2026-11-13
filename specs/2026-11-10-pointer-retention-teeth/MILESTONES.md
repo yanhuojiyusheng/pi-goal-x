@@ -332,3 +332,9 @@ User steering: fix P1 + P3 + process; keep the default window; expose it as the
 - Retain the first request-only goal block at its original history position until agent_end; the next run captures fresh task and usage state. Re-anchor on history rewrites or unsafe tool-result boundaries, and refresh immediately for lifecycle transitions and newly appearing urgent reminders.
 - Updated retention, lifecycle, usage and SDK serialization regressions and the shared cache gate; the archived release remains the comparison baseline. The first full-suite run exposed outdated tail-position assertions in the SDK worker; updated them to assert the complete prefix and next-run refresh.
 - Validation: unit suite 1245 passed; lint, type check, context gate, and cache gate passed (408 adapter scenarios, 1000 transitions). The SDK worker passed all 9 cases after updating its assertions. These captures stop before dispatch; actual GPT cache-hit improvement has not been measured.
+
+## 2026-11-13 — refresh on current task completion
+
+- User requested refreshing the retained block after the displayed actionable task completes, including inside an agent run. Store its ID with the retained block and inspect authoritative task status on the next request; completed or non-current tasks do not cause repeated resets. Nested actionable children are covered.
+- The first integration regression failed as expected with the old block still at its original anchor; implementation now re-anchors with updated task state. Tests also cover failed completion, completing a different task, tool-result placement and nested tasks.
+- Isolated full suite passed 1313/1313; typecheck, lint, context gate and cache gate (408 scenarios, 1000 transitions) passed. No live-provider request was made; reset may reduce cache reuse.

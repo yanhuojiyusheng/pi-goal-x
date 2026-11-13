@@ -4,7 +4,11 @@ Status: in progress
 
 Branch: `feat/long-goal-drift-guards` (10 commits ahead of `main` at `b0fc15e`, 0.34.1; 21 files, +680/−357)
 
-## Update: hold the active block for one agent run (2026-11-11)
+## Update: refresh when the displayed current task completes (2026-11-13)
+
+When the current actionable task shown in the retained active block successfully becomes complete, discard that block and inject a fresh block at the next model request, even within the same agent run. A failed completion or completing another task must not trigger this reset. Nested actionable tasks count as the current task. Ordinary usage changes still leave the block frozen. A reset may reduce provider cache reuse; proxy-side compression does not itself trigger this refresh.
+
+## Update: hold the active block for one agent run (2026-11-11; except as above)
 
 Keep the first request's active block and its position unchanged through the same agent run, including tool calls. After the agent stops, refresh it on the next run. This trades immediate updates to usage and task state for a stable request prefix. If history is rewritten or compacted, safely re-anchor the block; do not split tool calls from results. Goal deactivation clears the block. Actual provider cache-hit improvement requires live measurement.
 

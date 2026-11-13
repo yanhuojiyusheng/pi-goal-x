@@ -6,7 +6,7 @@ The request layout is:
 
 1. Host system prompt and tool schemas.
 2. Conversation history, with each goal checkpoint normalized to a tiny, stable trigger in its original position.
-3. One request-only block beginning with an ACTIVE header containing the goal ID, actionable task ID when focused, and cumulative time/tokens. It then carries applicable lifecycle rules, the objective, current task details and ancestor contracts, the next pending task's title, finite limits, scheduling state and reminders. Missing task details must be retrieved before work starts. With no current task or no task list, the block also provides guidance for how to proceed. It is rebuilt and appended at the tail on every request.
+3. One request-only block beginning with an ACTIVE header containing the goal ID, actionable task ID when focused, and cumulative time/tokens. It then carries applicable lifecycle rules, the objective, current task details and ancestor contracts, the next pending task's title, finite limits, scheduling state and reminders. Missing task details must be retrieved before work starts. With no current task or no task list, the block also provides guidance for how to proceed. Its content and position are retained through an agent run, except when the displayed current task completes or another reset is needed.
 
 Changing goal state never rewrites the system prompt or historical messages. The full goal-state message is not persisted into the session. Old checkpoints remain until Pi compacts history; retaining small markers avoids shifting the prefix on every continuation. Display-only auditor messages are consistently excluded, and tool calls stay adjacent to their results.
 
@@ -26,7 +26,7 @@ Provider references: [Anthropic prompt caching](https://platform.claude.com/docs
 
 Active requests inject one block at the tail. Its first ACTIVE header carries the actionable task ID and cumulative usage. Regular mode omits default status/mode and unlimited limits; current task details agree with the header, inherited contracts remain visible, and the next task is shown by title. Retrieve omitted details and contracts before starting that task. Special-mode rules, finite limits and runtime reminders appear when applicable.
 
-`stateReanchorRequests` is still accepted and persisted, but it no longer changes behavior: a single replaced block has nothing to re-anchor. Identical retries stay byte-identical, and history rewrites need no retained-anchor repair.
+`stateReanchorRequests` is accepted and persisted for compatibility but has no effect. The block resets after an agent run; if its displayed actionable task completes, the next request resets and re-anchors it immediately, even within that run. History rewrites and unsafe tool boundaries also re-anchor it. These resets may reduce cache reuse.
 
 ### Interpreting cost comparisons
 
