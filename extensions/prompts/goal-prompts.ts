@@ -107,6 +107,7 @@ export function taskListBlock(goal: GoalRecord, settings?: GoalSettings): string
  const index = taskIndex(goal.taskList.tasks);
  if (promptProfile() !== "legacy-v1") return compactTaskList(goal, index);
  const {complete, skipped, pending: pendingTasks} = index;
+ const legacyCurrent = taskCursor(goal.currentTaskId, index).current;
  const total = index.ordered.length;
  const pending = pendingTasks.length;
 	const lines: string[] = [];
@@ -114,16 +115,13 @@ export function taskListBlock(goal: GoalRecord, settings?: GoalSettings): string
 	// §8.1: surface the persisted execution focus (current task), with its
 	// verification contract when present, so the next continuation prompt
 	// carries the contract of the task the agent is working on.
-	if (goal.currentTaskId) {
-		const current = index.byId.get(goal.currentTaskId);
-		if (current) {
-			const contract = current.verificationContract ? ` (contract: ${excerpt(current.verificationContract, 600, "tasks")})` : "";
-			lines.push(`  Current: ${excerpt(current.id, 80, "tasks")} · ${excerpt(current.title, 180, "tasks")}${contract}`);
-		}
+	if (legacyCurrent) {
+		const contract = legacyCurrent.verificationContract ? ` (contract: ${excerpt(legacyCurrent.verificationContract, 600, "tasks")})` : "";
+		lines.push(`  Current: ${excerpt(legacyCurrent.id, 80, "tasks")} · ${excerpt(legacyCurrent.title, 180, "tasks")}${contract}`);
 	}
  const rendered = { count: 0, stop: false };
  lines.push(...renderPendingTasks(goal.taskList.tasks, 0, rendered));
- const hiddenPending = Math.max(0, pending - rendered.count - (goal.currentTaskId && pendingTasks.some(t => t.id === goal.currentTaskId) ? 1 : 0));
+ const hiddenPending = Math.max(0, pending - rendered.count - (legacyCurrent && pendingTasks.some(t => t.id === legacyCurrent.id) ? 1 : 0));
  if (hiddenPending > 0) lines.push(`  (+${hiddenPending} more pending — expand the dashboard with Ctrl+Shift+T)`);
 	if (goal.taskList.blockCompletion && pending! > 0) {
 		lines.push("  TASK GATE: do not request completion while tasks remain in [ ] pending state");
@@ -144,21 +142,59 @@ function taskAncestors(task: GoalTask, index: TaskIndex): GoalTask[] {
  return result;
 }
 
+/** Pending work in tree order, with each phase following its children. */
+function workUnits(index: TaskIndex): GoalTask[] {
+ const units: GoalTask[] = [];
+ const visit = (tasks: GoalTask[]) => {
+  for (const task of tasks) {
+   if (!task.lightweightSubtasks && task.subtasks) visit(task.subtasks);
+   if (task.status === "pending") units.push(task);
+  }
+ };
+ visit(index.tasks);
+ return units;
+}
+
+/** A phase whose children all ended, but which still needs its own acceptance. */
+function awaitingWrapUp(task: GoalTask): boolean {
+ return task.lightweightSubtasks !== true && task.subtasks !== undefined && task.subtasks.length > 0;
+}
+
+/**
+ * Displayed current and next work. The persisted focus anchors the order, but a
+ * phase awaiting wrap-up that precedes it must be closed first. Display order
+ * never completes a phase and never rewrites the persisted focus.
+ */
+function taskCursor(currentTaskId: string | undefined, index: TaskIndex): { current?: GoalTask; next?: GoalTask } {
+ const focused = currentTaskId ? index.byId.get(currentTaskId) : undefined;
+ const resolved = focused && actionableTask(focused);
+ const anchor = resolved?.status === "pending" ? resolved : undefined;
+ const units = workUnits(index);
+ if (!anchor) return { next: units[0] };
+ let currentIndex = units.findIndex(task => task.id === anchor.id);
+ const wrapUpIndex = units.findIndex((task, at) => awaitingWrapUp(task) && actionableTask(task).id === task.id && (currentIndex < 0 || at < currentIndex));
+ if (wrapUpIndex >= 0) currentIndex = wrapUpIndex;
+ const current = currentIndex >= 0 ? units[currentIndex]! : anchor;
+ const next = currentIndex >= 0
+  ? (units.length > 1 ? units[(currentIndex + 1) % units.length] : undefined)
+  : units.find(task => task.id !== current.id);
+ return { current, next };
+}
+
+/** Current and next work for one goal; a disabled or empty task list has none. */
+export function derivedTaskCursor(goal: GoalRecord, settings?: GoalSettings): { current?: GoalTask; next?: GoalTask } {
+ if (settings?.disableTasks || !goal.taskList?.tasks.length) return {};
+ return taskCursor(goal.currentTaskId, taskIndex(goal.taskList.tasks));
+}
+
 export function focusedTask(goal: GoalRecord, settings?: GoalSettings): GoalTask | undefined {
- if (settings?.disableTasks || !goal.currentTaskId) return undefined;
- const focused = taskIndex(goal.taskList?.tasks).byId.get(goal.currentTaskId);
- return focused && actionableTask(focused);
+ return derivedTaskCursor(goal, settings).current;
 }
 
 /** Current work, inherited contracts and one next step; other entries stay retrievable. */
 function compactTaskList(goal: GoalRecord, index: TaskIndex): string {
- const current = focusedTask(goal);
+ const { current, next } = taskCursor(goal.currentTaskId, index);
  const ancestors = current ? taskAncestors(current, index) : [];
- const currentIndex = index.ordered.findIndex(entry => entry.task.id === current?.id);
- const ordered = [...index.ordered.slice(currentIndex + 1), ...index.ordered.slice(0, currentIndex + 1)];
- const next = ordered.map(entry => entry.task).find(task =>
-  task.status === "pending" && task.id !== current?.id && !ancestors.some(parent => parent.id === task.id)
-  && actionableTask(task).id === task.id && !taskAncestors(task, index).some(parent => parent.lightweightSubtasks));
  const lines = [`[TASKS — ${index.complete}/${index.ordered.length} complete${index.skipped ? ` (${index.skipped} skipped)` : ""}]`];
  if (current) {
   lines.push(`Current: ${current.id} · ${excerpt(current.title, 180, "tasks")}${current.lightweightSubtasks ? " (lightweight)" : ""}`);
@@ -281,7 +317,7 @@ export function goalPromptBlock(goal: GoalRecord, settings?: GoalSettings, conte
 
 /** State includes the fresh header; pointer contains only optional runtime guidance. */
 export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; pointer: string } {
- const current = focusedTask(goal, settings);
+ const current = derivedTaskCursor(goal, settings).current;
  const usage = formatUsage(goal);
  const header = `[PI GOAL ACTIVE goalId=${goal.id}${current ? ` taskId=${current.id}` : ""}${usage ? ` ${usage}` : ""}]`;
  return { state: `${header}\n\nUsage is cumulative across goal turns, not context occupancy. This state supersedes earlier snapshots.\n\n${policyText(goal, settings)}`, pointer: nextStepBlock(goal, settings, contextUsage) };
@@ -302,7 +338,7 @@ function actionableTask(task: GoalTask): GoalTask {
 
 function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
  const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
- const current = focusedTask(goal, settings);
+ const current = derivedTaskCursor(goal, settings).current;
  const lines: string[] = [];
 	if (index && !current) {
 		const first = index.pending[0];
