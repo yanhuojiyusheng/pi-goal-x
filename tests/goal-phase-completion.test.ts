@@ -130,7 +130,7 @@ test("the derived order preserves ordinary sequential work and refreshes the cac
 
  goal.taskList!.tasks[0]!.status = "complete";
  const advanced = goalPromptParts(goal).state;
- assert.doesNotMatch(advanced.split("\n")[0]!, /taskId=/);
+ assert.match(advanced.split("\n")[0]!, /taskId=t2/);
  goal.currentTaskId = "t2";
  assert.match(goalPromptParts(goal).state, /Current: t2 · Second\nNext pending: t3 · Third/);
 });

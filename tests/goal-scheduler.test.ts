@@ -838,11 +838,14 @@ test("completing an actionable child refreshes a block focused on its parent", a
 
 test("finishing a displayed wrap-up phase refreshes the next phase within the same run", async t => {
  const h = await fixture(t, undefined, "owner", undefined, false);
- h.core.goalService.apply(h.ctx, {mutate: g => ({...g, currentTaskId: "3.2", taskList: {proposedAt: new Date().toISOString(), blockCompletion: false, tasks: [
+ h.core.goalService.apply(h.ctx, {mutate: g => ({...g, currentTaskId: undefined, taskList: {proposedAt: new Date().toISOString(), blockCompletion: false, tasks: [
   {id: "p1", title: "Phase one", status: "pending", verificationContract: "Verify phase one", subtasks: [{id: "1.1", title: "First", status: "complete"}]},
   {id: "p2", title: "Phase two", status: "pending", verificationContract: "Verify phase two", subtasks: [{id: "2.1", title: "Second", status: "complete"}]},
   {id: "p3", title: "Phase three", status: "pending", subtasks: [{id: "3.1", title: "Third", status: "complete"}, {id: "3.2", title: "Fourth", status: "pending"}]},
  ]}})});
+ const start = await h.tools.get("update_goal_task").execute("start-p1", {task_id: "p1", status: "start"}, undefined, undefined, h.ctx);
+ assert.match(start.content[0].text, /p1/);
+ assert.equal(h.core.state.goal?.currentTaskId, "p1");
  const history: any[] = [{role: "user", content: "work", timestamp: 1}];
  const request = async () => (await h.handlers.context_with_system!({messages: history}, h.ctx)).messages as any[];
  const first = (await request()).at(-1).content;
@@ -855,7 +858,17 @@ test("finishing a displayed wrap-up phase refreshes the next phase within the sa
  assert.match(next, /taskId=p2/);
  assert.match(next, /Current: p2 · Phase two\nDone when: Verify phase two\nNext pending: 3\.2/);
  assert.doesNotMatch(next, /^Parent /m);
- assert.equal(h.core.state.goal?.currentTaskId, "3.2");
+ assert.equal(h.core.state.goal?.currentTaskId, undefined);
+ assert.match(next, /Mark it current with update_goal_task\(\{task_id:"p2", status:"start"\}\)/);
+ await h.tools.get("update_goal_task").execute("start", {task_id: "p2", status: "start"}, undefined, undefined, h.ctx);
+ const secondResult = await h.tools.get("update_goal_task").execute("complete", {task_id: "p2", status: "complete", evidence: "Verified"}, undefined, undefined, h.ctx);
+ assert.match(secondResult.content[0].text, /p2 complete/);
+ history.push({role: "assistant", content: "completed second phase", timestamp: 4}, {role: "toolResult", content: "p2 complete", timestamp: 5});
+ const afterSecond = (await request()).at(-1).content;
+ assert.equal(h.core.state.goal?.currentTaskId, undefined);
+ assert.match(afterSecond, /taskId=3\.2/);
+ assert.match(afterSecond, /Current: 3\.2 · Fourth/);
+ assert.match(afterSecond, /Mark it current with update_goal_task\(\{task_id:"3\.2", status:"start"\}\)/);
 });
 
 test("prompt cache: normal and custom runs preserve history while refreshing all live goal state", async t => {

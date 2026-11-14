@@ -170,7 +170,7 @@ function taskCursor(currentTaskId: string | undefined, index: TaskIndex): { curr
  const resolved = focused && actionableTask(focused);
  const anchor = resolved?.status === "pending" ? resolved : undefined;
  const units = workUnits(index);
- if (!anchor) return { next: units[0] };
+ if (!anchor) return { current: units[0], next: units[1] };
  let currentIndex = units.findIndex(task => task.id === anchor.id);
  const wrapUpIndex = units.findIndex((task, at) => awaitingWrapUp(task) && actionableTask(task).id === task.id && (currentIndex < 0 || at < currentIndex));
  if (wrapUpIndex >= 0) currentIndex = wrapUpIndex;
@@ -340,9 +340,8 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
  const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
  const current = derivedTaskCursor(goal, settings).current;
  const lines: string[] = [];
-	if (index && !current) {
-		const first = index.pending[0];
-		const next = first && actionableTask(first);
+	if (index && (!goal.currentTaskId || index.byId.get(goal.currentTaskId)?.status !== "pending")) {
+		const next = current;
 		lines.push("Now: no task is marked current.");
 		if (next) {
 			// Ids are never excerpted: a truncated id cannot be passed back to

@@ -115,11 +115,9 @@ test("taskListBlock renders correctly with mixed statuses", () => {
 	// P1-4: completed/skipped collapse to counts; only pending renders inline.
 	assert.equal(block.includes("[x] t1"), false, "completed tasks collapse to the header count");
 	assert.equal(block.includes("[~] t3"), false, "skipped tasks collapse to the header count");
-	assert.match(block, /Next pending: t2/);
+	assert.match(block, /Current: t2/);
 	assert.match(block, /TASK GATE/);
-	// PR E compact-v2: visible pending items make the separate "Next pending"
-	// line redundant (it would duplicate t2).
-	assert.equal((block.match(/Next pending: t2/g) ?? []).length, 1);
+	assert.doesNotMatch(block, /Next pending:/);
 });
 
 test("taskListBlock shows TASK GATE when blockCompletion enabled and pending tasks exist", () => {
@@ -164,7 +162,7 @@ test("goalPrompt includes taskListBlock when taskList is present", () => {
 	};
 	const prompt = goalPrompt(g);
 	assert.match(prompt, /\[TASKS/);
-	assert.match(prompt, /Next pending: t1/);
+	assert.match(prompt, /Current: t1/);
 });
 
 test("goalPrompt omits taskListBlock when no taskList", () => {
@@ -207,7 +205,7 @@ test("taskListBlock renders subtasks indented", () => {
 	};
 	const block = taskListBlock(g);
 	assert.ok(block);
-	assert.match(block, /Next pending: t1a/);
+	assert.match(block, /Current: t1a/);
 	// The completed subtask collapses to the count.
 	assert.doesNotMatch(block, /^\[ \]/m);
 	assert.equal(block.includes("[x] t1b"), false, "completed subtask collapses to the count (P1-4)");
@@ -232,8 +230,8 @@ test("taskListBlock renders nested subtasks up to depth limit", () => {
 	};
 	const block = taskListBlock(g);
 	assert.ok(block);
-	assert.match(block, /Next pending: t1a/);
-	assert.match(block, /1 other pending task entries omitted/);
+	assert.match(block, /Current: t1a/);
+	assert.match(block, /Next pending: t1 · Parent/);
 	assert.equal(block.includes("[x] t1ai"), false, "completed grandchild collapses to the count (P1-4)");
 	// 3-level hierarchy: 3 tasks, 1 complete
 	assert.match(block, /1\/3 complete/);
@@ -282,7 +280,7 @@ test("goalPrompt includes subtask rendering", () => {
 		proposedAt: "2026-05-27T00:00:00.000Z",
 	};
 	const prompt = goalPrompt(g);
-	assert.match(prompt, /Next pending: t1/);
+	assert.match(prompt, /Current: t1/);
 	// P1-4: the completed child collapses to the header count.
 	assert.equal(prompt.includes("[x] t1a"), false, "completed subtask collapses to the count (P1-4)");
 	assert.match(prompt, /1\/2 complete/);
@@ -341,9 +339,9 @@ test("taskListBlock surfaces the persisted current task with its contract", () =
 	g.currentTaskId = "t2";
 	const block = taskListBlock(g);
 	assert.match(block, /Current: t2 · Task two\nDone when: Run the check\./);
-	// No focus: no Current line.
+	// Without persisted focus, the first pending task is inferred.
 	g.currentTaskId = undefined;
-	assert.doesNotMatch(taskListBlock(g), /Current:/);
+	assert.match(taskListBlock(g), /Current: t1/);
 	// Focus on a contract-less task: no contract suffix.
 	g.currentTaskId = "t1";
 	assert.match(taskListBlock(g), /Current: t1 · Task one\n/);
@@ -360,7 +358,8 @@ test("prompt cache key changes when currentTaskId changes", () => {
 	g.currentTaskId = "t1";
 	const after = goalPrompt(g);
 	assert.match(after, /Current: t1 · Task one/);
-	assert.doesNotMatch(before, /Current:/);
+	assert.match(before, /Now: no task is marked current/);
+	assert.doesNotMatch(after, /Now: no task is marked current/);
 });
 
 // ── PR E: single-source task block + prompt profiles ─────────────────────────
