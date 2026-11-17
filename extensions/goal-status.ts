@@ -248,7 +248,7 @@ function buildVerboseStatus(goal: GoalRecord, model: ReturnType<typeof deriveGoa
 	}
 	if (goal.taskList) {
 		lines.push("", `Tasks (${topLevelCount(goal.taskList.tasks)} top-level, ${goal.taskList.tasks.filter((t) => t.status === "complete" || t.status === "skipped").length} done):`);
-		for (const line of renderTaskTreeVerbose(goal.taskList.tasks, 0, goal.currentTaskId)) {
+		for (const line of renderTaskTreeVerbose(goal.taskList.tasks, 0, model?.currentTask?.id)) {
 			lines.push(line);
 		}
 	}

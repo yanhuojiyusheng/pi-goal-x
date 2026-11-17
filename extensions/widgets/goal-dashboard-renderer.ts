@@ -545,7 +545,7 @@ export function renderCurrentTaskBlock(
 		lines.push(...wrappedBlock(theme, safeWidth, "Evidence", model.currentTask!.evidence));
 	}
 	if (model.currentTask!.inferred) {
-		lines.push(boxLine(theme, safeWidth, dim(theme, "Inferred from the first pending task — no persisted current task.")));
+		lines.push(boxLine(theme, safeWidth, dim(theme, "Inferred from task order for display.")));
 	}
 	return lines;
 }

@@ -1,6 +1,7 @@
 import type { GoalCommands } from "../goal-controls.ts";
 import { schedulerSummaryParts } from "../goal-scheduler-state.ts";
 import { taskIndex } from "../goal-task-index.ts";
+import { derivedTaskCursor } from "../prompts/goal-prompts.ts";
 /**
  * Shared dashboard view model (plan §6) — the single source of truth for the
  * persistent compact dashboard, the expanded dashboard, `/goal-status`, audit
@@ -75,9 +76,8 @@ export interface GoalDashboardModel {
 		verificationContract?: string;
 		evidence?: string;
 		/**
-		 * True when no valid persisted currentTaskId existed and the current
-		 * task was inferred from the first pending task for display only —
-		 * never persisted (§7.4).
+		 * True when the displayed task differs from persisted currentTaskId.
+		 * Derived from task order for display only — never persisted (§7.4).
 		 */
 		inferred?: boolean;
 	};
@@ -247,22 +247,18 @@ export interface DashboardCurrentTask extends CurrentTaskSubtaskProgress {
 }
 
 /**
- * Resolve the current task: the persisted currentTaskId when it references an
- * existing pending task; otherwise (missing, invalid, or removed) fall back
- * to the first pending task in tree order, marked `inferred` so the fallback
- * is never persisted (§7.4). `currentTaskId` may point at any tree node —
- * top-level task or subtask (§7.2).
+ * Resolve the current task using the same cursor as prompt injection: pending
+ * children first, then their parent for wrap-up, including earlier ready phases
+ * ahead of later persisted focus. Mark a differing display focus as `inferred`;
+ * never persist it (§7.4).
  */
 export function deriveCurrentTask(goal: GoalRecord, nodes: DashboardTaskNode[]): DashboardCurrentTask | undefined {
 	const tasks = goal.taskList?.tasks;
 	if (!tasks || tasks.length === 0 || nodes.length === 0) return undefined;
-	let node: DashboardTaskNode | undefined;
-	if (goal.currentTaskId) {
-		node = nodes.find((n) => n.id === goal.currentTaskId && n.status === "pending");
-	}
-	const inferred = node === undefined;
-	if (inferred) node = nodes.find((n) => n.status === "pending");
+	const current = derivedTaskCursor(goal).current;
+	const node = current && nodes.find((n) => n.id === current.id);
 	if (!node) return undefined;
+	const inferred = node.id !== goal.currentTaskId;
 	const subtaskProgress = deriveCurrentTaskSubtaskProgress(node, tasks);
 	return {
 		id: node.id,

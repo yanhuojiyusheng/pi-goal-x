@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createGoal, type GoalTaskList } from "../extensions/goal-record.ts";
 import { goalPromptParts, taskListBlock } from "../extensions/prompts/goal-prompts.ts";
+import { deriveGoalDashboardModel } from "../extensions/widgets/goal-dashboard-model.ts";
 
 /**
  * Spec 2026-11-14-phase-completion-prompt: a phase whose subtasks have all
@@ -9,6 +10,23 @@ import { goalPromptParts, taskListBlock } from "../extensions/prompts/goal-promp
  * current task, in tree order, even when the persisted focus already moved to
  * a later phase.
  */
+
+function matchingState(goal: ReturnType<typeof createGoal>): string {
+ const before = structuredClone(goal);
+ const state = goalPromptParts(goal).state;
+ const currentId = state.match(/^Current: (\S+) ·/m)?.[1];
+ const ui = deriveGoalDashboardModel(goal, {focused: true, otherOpenGoals: 0})!;
+ assert.equal(ui.currentTask?.id, currentId, "UI current matches the injected current");
+ assert.deepEqual(ui.taskTree.filter(task => task.isCurrent).map(task => task.id), currentId ? [currentId] : []);
+ if (currentId) {
+  const current = ui.taskTree.find(task => task.id === currentId)!;
+  assert.equal(ui.currentTask?.verificationContract, current.verificationContract);
+  if (current.verificationContract) assert.ok(state.includes(`Done when: ${current.verificationContract}`));
+  assert.equal(ui.currentTask?.inferred, currentId === goal.currentTaskId ? undefined : true);
+ }
+ assert.deepEqual(goal, before, "display derivation never changes persisted state");
+ return state;
+}
 
 function phaseGoal(): ReturnType<typeof createGoal> {
  const goal = createGoal({objective: "Ship the three phases", autoContinue: true, sisyphus: false});
@@ -31,7 +49,7 @@ function phaseGoal(): ReturnType<typeof createGoal> {
 
 test("an earlier wrap-up phase becomes current ahead of a later persisted focus", () => {
  const goal = phaseGoal();
- const state = goalPromptParts(goal).state;
+ const state = matchingState(goal);
  assert.match(state.split("\n")[0]!, / taskId=p1\]/, "the ACTIVE header names the phase awaiting wrap-up");
  assert.match(state, /\[TASKS — 3\/7 complete\]/);
  assert.match(state, /Current: p1 · Phase one\nDone when: Phase one acceptance/, "Done when carries the phase's own acceptance");
@@ -43,14 +61,14 @@ test("an earlier wrap-up phase becomes current ahead of a later persisted focus"
 test("completing the first wrap-up phase promotes the next one and then the pending step", () => {
  const goal = phaseGoal();
  goal.taskList!.tasks[0]!.status = "complete";
- const afterFirst = goalPromptParts(goal).state;
+ const afterFirst = matchingState(goal);
  assert.match(afterFirst.split("\n")[0]!, / taskId=p2\]/);
  assert.match(afterFirst, /Current: p2 · Phase two\nDone when: Phase two acceptance/);
  assert.match(afterFirst, /Next pending: 3\.2 · Step three two/, "the next item is the pending step, not the completed 3.1 or the open phase");
  assert.doesNotMatch(afterFirst, /Next pending: 3\.1/);
 
  goal.taskList!.tasks[1]!.status = "complete";
- const afterSecond = goalPromptParts(goal).state;
+ const afterSecond = matchingState(goal);
  assert.match(afterSecond.split("\n")[0]!, / taskId=3\.2\]/);
  assert.match(afterSecond, /Current: 3\.2 · Step three two\nDone when: Step three two acceptance/);
  assert.match(afterSecond, /Parent p3 contract: Phase three acceptance/, "the open ancestor still contributes its contract");
@@ -59,7 +77,7 @@ test("completing the first wrap-up phase promotes the next one and then the pend
 test("skipped children allow their phase to be offered for wrap-up", () => {
  const goal = phaseGoal();
  goal.taskList!.tasks[0]!.subtasks![0]!.status = "skipped";
- const state = goalPromptParts(goal).state;
+ const state = matchingState(goal);
  assert.match(state, /taskId=p1\]/);
  assert.match(state, /Current: p1 · Phase one/);
  assert.match(state, /Next pending: p2 · Phase two/);
@@ -78,13 +96,13 @@ test("nested phases wrap up from the inside out", () => {
  ]} as GoalTaskList;
  goal.currentTaskId = "later";
 
- const inner = goalPromptParts(goal).state;
+ const inner = matchingState(goal);
  assert.match(inner, /Current: inner · Inner phase\nDone when: Inner acceptance/);
  assert.match(inner, /Parent outer contract: Outer acceptance/);
  assert.match(inner, /Next pending: outer · Outer phase/);
 
  goal.taskList!.tasks[0]!.subtasks![0]!.status = "complete";
- const outer = goalPromptParts(goal).state;
+ const outer = matchingState(goal);
  assert.match(outer, /Current: outer · Outer phase/);
  assert.doesNotMatch(outer, /^Parent /m, "the outermost phase is first level");
  assert.match(outer, /Next pending: later · Later step/);
@@ -94,9 +112,13 @@ test("the last pending child points to its parent before moving to the next phas
  const goal = phaseGoal();
  goal.taskList!.tasks[0]!.subtasks![0]!.status = "pending";
  goal.currentTaskId = "1.1";
- const state = goalPromptParts(goal).state;
+ const state = matchingState(goal);
  assert.match(state, /Current: 1\.1 · Step one one/);
  assert.match(state, /Next pending: p1 · Phase one/);
+
+ goal.taskList!.tasks[0]!.subtasks![0]!.status = "complete";
+ goal.currentTaskId = undefined;
+ assert.match(matchingState(goal), /Current: p1 · Phase one/);
 });
 
 test("lightweight subtasks stay notes on their parent and never trigger wrap-up", () => {
@@ -109,7 +131,7 @@ test("lightweight subtasks stay notes on their parent and never trigger wrap-up"
   {id: "next", title: "Next step", status: "pending"},
  ]} as GoalTaskList;
  goal.currentTaskId = "next";
- const state = goalPromptParts(goal).state;
+ const state = matchingState(goal);
  assert.match(state, /Current: next · Next step/, "the persisted focus stays current");
  assert.match(state, /Next pending: p1 · Phase one \(lightweight\)/);
 });
@@ -123,14 +145,27 @@ test("the derived order preserves ordinary sequential work and refreshes the cac
   {id: "t3", title: "Third", status: "pending"},
  ]} as GoalTaskList;
  goal.currentTaskId = "t1";
- const first = goalPromptParts(goal).state;
+ const first = matchingState(goal);
  assert.match(first, /Current: t1 · First\nNext pending: t2 · Second/);
  assert.equal(goalPromptParts(goal).state, first, "an unchanged task tree reuses the cached fragment");
  assert.equal(taskListBlock(goal), taskListBlock(goal));
 
  goal.taskList!.tasks[0]!.status = "complete";
- const advanced = goalPromptParts(goal).state;
+ const advanced = matchingState(goal);
  assert.match(advanced.split("\n")[0]!, /taskId=t2/);
  goal.currentTaskId = "t2";
- assert.match(goalPromptParts(goal).state, /Current: t2 · Second\nNext pending: t3 · Third/);
+ assert.match(matchingState(goal), /Current: t2 · Second\nNext pending: t3 · Third/);
+});
+
+test("without persisted focus UI starts with pending children and returns to their parent", () => {
+ const goal = phaseGoal();
+ goal.currentTaskId = undefined;
+ const phase = goal.taskList!.tasks[0]!;
+ phase.subtasks![0]!.status = "pending";
+ phase.subtasks!.push({id: "1.2", title: "Second child", status: "pending"});
+ assert.match(matchingState(goal), /Current: 1\.1 · Step one one/);
+ phase.subtasks![0]!.status = "complete";
+ assert.match(matchingState(goal), /Current: 1\.2 · Second child/);
+ phase.subtasks![1]!.status = "complete";
+ assert.match(matchingState(goal), /Current: p1 · Phase one\nDone when: Phase one acceptance/);
 });

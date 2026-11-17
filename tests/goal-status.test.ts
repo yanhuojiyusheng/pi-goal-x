@@ -45,7 +45,7 @@ function fiveTasks(): GoalTask[] {
 			subtasks: [
 				task("t3.1", "Add loading state", { status: "complete" }),
 				task("t3.2", "Generate timestamped filename", { status: "complete" }),
-				task("t3.3", "Add error handling"),
+				task("t3.3", "Add error handling", { verificationContract: "Errors are shown without losing the filters." }),
 			],
 		}),
 		task("t4", "Add documentation"),
@@ -71,6 +71,27 @@ function base(): Parameters<typeof buildGoalStatusText>[0] {
 	};
 }
 
+test("status current, contract, and tree highlight prefer a phase awaiting wrap-up", () => {
+	const record = withTasks([
+		task("phase", "Accept phase", {
+			verificationContract: "Phase acceptance",
+			subtasks: [task("child", "Implement phase", { status: "complete" })],
+		}),
+		task("later", "Later task", { verificationContract: "Later acceptance" }),
+	], { currentTaskId: "later" });
+	const options = { goal: record, focused: true, otherOpenGoals: 0 };
+	const standard = buildGoalStatusText(options);
+	assert.match(standard, /Current\s+phase · Accept phase/);
+	assert.match(standard, /Contract: Phase acceptance/);
+	assert.match(standard, /▸ phase\s+Accept phase/);
+	assert.doesNotMatch(standard, /no persisted current task|Later acceptance/);
+	const verbose = buildGoalStatusText({ ...options, verbose: true });
+	assert.match(verbose, /Current task: phase · Accept phase \(inferred\)/);
+	assert.match(verbose, /▸ phase\s+Accept phase/);
+	assert.doesNotMatch(verbose, /▸ later/);
+	assert.equal(record.currentTaskId, "later");
+});
+
 test("standard mode renders the compact dashboard from the shared model (§13.1)", () => {
 	const text = buildGoalStatusText(base());
 	assert.match(text, /╭─ pi-goal-x ─ Add CSV export to reports/);
@@ -81,8 +102,8 @@ test("standard mode renders the compact dashboard from the shared model (§13.1)
 	// The five-task list overflows the medium-status width (78 cols).
 	assert.match(text, /… \+1 more task/);
 	assert.match(text, /Tasks · ✓3 done · 2 open/);
-	assert.match(text, /Current  t3 · Add the download button/);
-	assert.match(text, /· Sub 2\/3 \[.*\]/, "subtask bar sits beside the task bar in the compact header");
+	assert.match(text, /Current  t3\.3 · Add error handling/);
+	assert.doesNotMatch(text, /· Sub /, "the current child is a leaf");
 	assert.match(text, /Verify   Run npm test with zero failures/);
 	assert.match(text, /File     \.pi\/goals\/active_goal_g1\.md/);
 });
@@ -91,7 +112,7 @@ test("standard mode adds current-task details, activity, and the last audit", ()
 	const text = buildGoalStatusText(base());
 	// Current-task details block (§13.1 item 2).
 	assert.match(text, /├─ Current task /);
-	assert.match(text, /Contract: The button downloads a CSV using the active filters/);
+	assert.match(text, /Contract: Errors are shown without losing the filters/);
 	// Recent activity (§13.1 item 3) — ledger-derived, task titles preferred.
 	assert.match(text, /├─ Recent activity /);
 	assert.match(text, /Started “Add error handling”\./);
@@ -146,11 +167,12 @@ test("verbose mode carries full diagnostic detail (§13.2)", () => {
 	assert.match(text, /Add CSV export to reports/);
 	// Full task tree with full evidence and contracts.
 	assert.match(text, /✓ t1  Review reports page and data source — evidence: Reviewed source/);
-	assert.match(text, /▸ t3  Add the download button — contract: The button downloads a CSV/);
+	assert.match(text, /· t3  Add the download button — contract: The button downloads a CSV/);
+	assert.match(text, /▸ t3\.3  Add error handling — contract: Errors are shown/);
 	assert.match(text, /~ t5  Add and run tests/);
 	// Current task detail.
-	assert.match(text, /Current task: t3 · Add the download button/);
-	assert.match(text, /subtasks: 2\/3 \(67%\)/);
+	assert.match(text, /Current task: t3\.3 · Add error handling \(inferred\)/);
+	assert.doesNotMatch(text, /subtasks: 2\/3/, "the current child has no subtasks");
 	// Recent ledger history.
 	assert.match(text, /Recent ledger:/);
 	assert.match(text, /task_started/);

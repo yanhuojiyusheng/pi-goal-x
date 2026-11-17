@@ -352,14 +352,14 @@ test("deriveTaskListViewport computes the window with hidden counts", () => {
 // Current task resolution (§7.2, §7.4, §9.3)
 // ---------------------------------------------------------------------------
 
-test("persisted current top-level task is resolved without inference", () => {
+test("persisted parent focus displays its pending child and marks it inferred", () => {
 	const m = model({ ...withTasks(fiveTaskList()), currentTaskId: "t3" });
-	assert.equal(m.currentTask?.id, "t3");
-	assert.equal(m.currentTask?.title, "Add the download button");
-	assert.equal(m.currentTask?.depth, 0);
-	assert.equal(m.currentTask?.inferred, undefined);
-	const t3 = m.taskTree.find((n) => n.id === "t3");
-	assert.equal(t3?.isCurrent, true);
+	assert.equal(m.currentTask?.id, "t3.3");
+	assert.equal(m.currentTask?.title, "Add error handling");
+	assert.equal(m.currentTask?.depth, 1);
+	assert.equal(m.currentTask?.inferred, true);
+	assert.equal(m.taskTree.find((n) => n.id === "t3.3")?.isCurrent, true);
+	assert.equal(m.taskTree.find((n) => n.id === "t3")?.isCurrent, false);
 });
 
 test("current nested subtask is resolved with its depth", () => {
@@ -369,15 +369,19 @@ test("current nested subtask is resolved with its depth", () => {
 	assert.equal(m.taskTree.find((n) => n.id === "t3.3")?.isCurrent, true);
 });
 
-test("current parent task shows direct-child subtask progress", () => {
-	const m = model({ ...withTasks(fiveTaskList()), currentTaskId: "t3" });
+test("current parent awaiting wrap-up shows completed direct-child progress", () => {
+	const tasks = fiveTaskList();
+	tasks[2]!.subtasks![2]!.status = "complete";
+	const m = model({ ...withTasks(tasks), currentTaskId: "t3" });
+	assert.equal(m.currentTask?.id, "t3");
+	assert.equal(m.currentTask?.inferred, undefined);
 	assert.deepEqual(
 		{
 			completed: m.currentTask?.completedSubtasks,
 			total: m.currentTask?.totalSubtasks,
 			pct: m.currentTask?.subtaskPercentage,
 		},
-		{ completed: 2, total: 3, pct: 67 },
+		{ completed: 3, total: 3, pct: 100 },
 	);
 });
 
@@ -387,11 +391,11 @@ test("current leaf task omits subtask progress (all-zero totals)", () => {
 	assert.equal(m.currentTask?.subtaskPercentage, 0);
 });
 
-test("invalid currentTaskId falls back to the first pending task and is marked inferred", () => {
+test("invalid currentTaskId falls back to the first pending work unit and is marked inferred", () => {
 	const m = model({ ...withTasks(fiveTaskList()), currentTaskId: "t999" });
 	assert.equal(m.currentTask?.inferred, true);
-	assert.equal(m.currentTask?.id, "t3"); // first pending in tree order
-	assert.equal(m.currentTask?.completedSubtasks, 2); // subtask progress still derives
+	assert.equal(m.currentTask?.id, "t3.3"); // pending child before its parent
+	assert.equal(m.currentTask?.completedSubtasks, 0);
 });
 
 test("removed current task falls back to first pending", () => {
@@ -432,14 +436,16 @@ test("deriveCurrentTaskSubtaskProgress omits the ratio for a leaf", () => {
 // Verification visibility (§11)
 // ---------------------------------------------------------------------------
 
-test("goal-level and task-level verification contracts are surfaced", () => {
+test("goal-level and current child verification contracts are surfaced", () => {
+	const tasks = fiveTaskList();
+	tasks[2]!.subtasks![2]!.verificationContract = "Errors are shown without losing the filters.";
 	const m = model({
-		...withTasks(fiveTaskList()),
+		...withTasks(tasks),
 		verificationContract: "Run npm test with zero failures.",
 		currentTaskId: "t3",
 	});
 	assert.equal(m.goalVerificationContract, "Run npm test with zero failures.");
-	assert.equal(m.currentTask?.verificationContract, "The button downloads a CSV using the active filters.");
+	assert.equal(m.currentTask?.verificationContract, "Errors are shown without losing the filters.");
 });
 
 // ---------------------------------------------------------------------------
