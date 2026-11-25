@@ -101,6 +101,12 @@ export interface GoalSettingsLayer {
 	/** Optional extension-run limit per creation/resume; zero disables, absent inherits (default unlimited). */
 	maxAutonomousRuns?: number;
 	/**
+	 * Deprecated compatibility shell. The single block keeps its anchor for the
+	 * whole session, so there is nothing to re-anchor; the value is accepted and
+	 * persisted so existing settings files keep loading, and it has no effect.
+	 */
+	stateReanchorRequests?: number;
+	/**
 	 * Report the "Autonomous runs: used/limit" line for a finite run allowance
 	 * (default true). The line reports a limit, so it appears exactly when a
 	 * finite allowance exists. Display only; enforcement is unaffected.
@@ -387,6 +393,14 @@ export function parseSettingsLayer(
 				const parsed = asPositiveInt(value);
 				if (parsed === undefined) fail("invalid_value", `${key} must be an integer >= 1`, key);
 				else layer.subtaskDepth = parsed;
+				break;
+			}
+			case "stateReanchorRequests": {
+				// Accepted for compatibility with the retired re-anchor setting: a
+				// single block that never moves needs no re-anchor window.
+				const n = typeof value === "number" ? value : typeof value === "string" && /^[0-9]+$/.test(value.trim()) ? Number(value) : NaN;
+				if (!Number.isSafeInteger(n) || n < 0) fail("invalid_value", "stateReanchorRequests must be a nonnegative safe integer (0 disables re-anchoring)", key);
+				else layer.stateReanchorRequests = n;
 				break;
 			}
 			case "maxAutonomousRuns": {

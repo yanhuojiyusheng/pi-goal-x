@@ -83,3 +83,55 @@ rates, TTLs or routing.
   approved display deltas; 1,000 bounded transitions`. Every scenario's delta is
   `single-request-only-goal-block`, sum −6,498 bytes, per scenario −223…+34,
   live blocks per request ∈ {0, 1}.
+
+## Porting the `dev` design onto this branch
+
+The user's decision (`"冲突的地方应该采用我的设计标准"`) settled conflicts in
+favour of the `dev` design; the UI keeps `main`'s `Box` + `i18n` skeleton, and
+`stateReanchorRequests` survives as a compatibility shell. `main`'s 9-commit
+widgets rewrite between `111855c` and `main` turned out to be i18n, module
+splits and a speed-up only — `0138f98` states "Rendered output is unchanged" and
+no `fix`/`bug`/`crash` commit touches `extensions/widgets/`. So the bug `dev`
+does fix is still unfixed on `main`: after a phase's children all complete, the
+cursor never returns to the parent, the block says "no task is marked current",
+and the model has no reason to call `update_goal_task(parent, status:"complete")`.
+
+Landed:
+
+- `extensions/prompts/goal-prompts.ts` carries the `dev` task cursor:
+  `workUnits` (post-order, parent after its children), `awaitingWrapUp`,
+  `taskCursor` (wraps back to an earlier ready phase with
+  `wrapUpIndex >= 0 ? wrapUpIndex : currentIndex`), `derivedTaskCursor`,
+  `focusedTask`, `actionableTask`, `taskAncestors`, `compactTaskList`. The
+  single block is `[state, pointer]`: the header carries the derived
+  `taskId=`, the pointer (`nextStepBlock`) carries "Now: …" and the usage line.
+- `taskListBlock` uses `compactTaskList` unless `promptProfile() === "legacy-v1"`.
+- `extensions/goal-context-parts.ts` joins `policy` + `pointer` into one block;
+  `goal-dashboard-model.deriveCurrentTask` and
+  `goal-status.renderTaskTreeVerbose` both read `derivedTaskCursor`, so the
+  dashboard highlight and the `▸` marker agree with the prompt.
+- `stateReanchorRequests` accepted, persisted, listed in the settings menu as
+  `state re-anchor window (retired)`, and has no runtime effect.
+
+Verified cursor behaviour with a phase whose children are all complete and a
+persisted focus on one of those children: the header renders `taskId=phase1`,
+the task list renders `Current: phase1 · Phase one` with
+`Next pending: p2a · Child C`, and the block closes with
+`Now: no task is marked current.` / `Start with the first pending task: phase1`.
+Before the port the same state produced a child id (or nothing) and no route to
+the parent's completion.
+
+Gate status after the port: `tsc` clean, `npm test` 1301 pass with only
+`experiment harness shell tests pass` failing (reproduced on `main` `073277b`
+via `bash tests/shell/harness.test.sh` → `FAIL - supported case id resolves`),
+`context:gate` PASS over 24 fixtures after regenerating the baseline, and
+`context:cache-gate` PASS. Two `dev`-only test files were kept
+(`goal-phase-completion`, `goal-compact-prompt`); the other seven were dropped
+because they target modules `main` removed or split
+(`buildCompactionSummary`, `MAX_PROMPT_FRAGMENT_CHARS`, `tests/tui-test-utils.ts`,
+`tests/stabilization-utils.ts`, `extensions/goal-settings.ts`) and porting them
+would mean porting code this branch deliberately does not have.
+
+Note for anyone running the suite: `.pi/pi-goal-x-settings.json` overrides
+`keybindings.dashboard.toggleExpand` to `ctrl+alt+d`, which fails five
+`tests/goal-widget.test.ts` cases. Move it aside before `npm test`.

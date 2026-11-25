@@ -167,11 +167,12 @@ function blockedState(core: GoalContextCore, goal: GoalRecord): string {
 
 function activeState(core: GoalContextCore, ctx: ExtensionContext, goal: GoalRecord, ledgerEvents: () => GoalLedgerEvent[]): GoalContextParts {
 	const settings = loadGoalSettings(ctx.cwd);
-	const { state: policy } = goalPromptParts(goal, { ...settings, commands: core.loadedCommands }, ctx.getContextUsage?.());
-	// One block, one position: the auditor rejection joins the block itself, so
-	// there is no second message that could contradict it. Everything below is a
-	// one-shot note the model must act on now.
-	let state = policy;
+	const { state: policy, pointer } = goalPromptParts(goal, { ...settings, commands: core.loadedCommands }, ctx.getContextUsage?.());
+	// One block, one position: the pointer joins the policy here so the model
+	// reads the current step and the rules it belongs to as one string. The
+	// auditor rejection below also joins the block, so no second message can
+	// contradict it; everything else is a one-shot note the model must act on now.
+	let state = [policy, pointer].filter(Boolean).join("\n\n");
 	const notes: string[] = [];
 	// F5: [GOAL STALLED] steering note when the detector fired.
 	const stalledNote = core.watch.checkStall(ctx);

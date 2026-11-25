@@ -148,8 +148,10 @@ test("compact context preserves critical rules and exposes omitted task descenda
 	goal.currentTaskId="parent"; goal.verificationContract="contract "+"y".repeat(20000);
 	const prompt=goalPrompt(goal);
 	assert.ok(prompt.length<10_000, "the injected goal prompt stays under 10,000 characters");
-	for(const rule of [/three consecutive goal turns/,/status: "paused"/,/independent completion auditor/,/TASK GATE/,/get_goal\(section="objective"\)/,/Follow the user's ordered plan faithfully/])assert.match(prompt,rule);
-	assert.match(taskListBlock(goal),/child/); assert.equal((taskListBlock(goal).match(/Current: parent/g)??[]).length,1);
+	for(const rule of [/3 consecutive goal turns/,/status:"paused"/,/independent auditor/,/TASK GATE/,/get_goal\(section="objective"\)/,/Follow the user's ordered plan faithfully/])assert.match(prompt,rule);
+	assert.match(taskListBlock(goal),/child/);
+	// The cursor descends to the open child; the line appears exactly once.
+	assert.equal((taskListBlock(goal).match(/Current: child/g)??[]).length,1);
 	goal.objective="Updated objective with same id/revision/time";
 	assert.match(goalPrompt(goal),/Updated objective/);
 });

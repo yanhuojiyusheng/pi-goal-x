@@ -121,6 +121,7 @@ function resolvedSettingsSnapshot(cwd: string, env: NodeJS.ProcessEnv): Settings
 		locale: top("locale", undefined, "PI_GOAL_LOCALE", env.PI_GOAL_LOCALE),
 		stallTimeoutMinutes: top("stallTimeoutMinutes", 0),
 		maxAutonomousRuns: top("maxAutonomousRuns", undefined),
+		stateReanchorRequests: top("stateReanchorRequests", undefined),
 		idleContinuationBackoff: top("idleContinuationBackoff", false),
 		strictExecutionContract: top("strictExecutionContract", false),
 		objectiveMaxChars: top("objectiveMaxChars", 0, "PI_GOAL_OBJECTIVE_MAX_CHARS", asNonNegativeInt(env.PI_GOAL_OBJECTIVE_MAX_CHARS)),
@@ -222,6 +223,9 @@ export function effectiveSettingsReport(cwd: string, env: NodeJS.ProcessEnv = pr
 		{ key: "idleContinuationBackoff", label: t("slow repeated idle replies (opt-in)"), format: () => String(snapshot.value.idleContinuationBackoff) },
 		{ key: "strictExecutionContract", label: t("explicit execution contracts (opt-in)"), format: () => String(snapshot.value.strictExecutionContract) },
 		{ key: "maxAutonomousRuns", label: t("autonomous run allowance"), format: () => snapshot.value.maxAutonomousRuns === 0 ? t("0 (disabled)") : String(snapshot.value.maxAutonomousRuns ?? t("unlimited (default)")) },
+		// Kept visible so a settings file that still carries it round-trips; the
+		// single block never re-anchors, so the value has no runtime effect.
+		{ key: "stateReanchorRequests", label: t("state re-anchor window (retired)"), format: () => snapshot.value.stateReanchorRequests === undefined ? t("unset (default)") : snapshot.value.stateReanchorRequests === 0 ? t("0 (never)") : String(snapshot.value.stateReanchorRequests) },
 		{ key: "stallTimeoutMinutes", label: t("stall timeout (minutes)"), format: () => String(snapshot.value.stallTimeoutMinutes) },
 		{ key: "objectiveMaxChars", label: t("max objective length (0 = none)"), format: () => String(snapshot.value.objectiveMaxChars) },
 		{ key: "networkRecovery", label: t("network recovery attempts (0 = unbounded)"), format: () => String(snapshot.value.networkRecovery?.maxAttempts ?? 0) },

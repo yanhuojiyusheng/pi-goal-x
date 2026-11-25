@@ -799,7 +799,8 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
 	assert.deepEqual(first.slice(0, -1), original, "one request-only block rides at the tail");
 	assert.equal(first.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
 	assert.match(first.at(-1).content, /PI GOAL ACTIVE/);
-	assert.match(first.at(-1).content, /Goal snapshot:/);
+	assert.match(first.at(-1).content, /^\[PI GOAL ACTIVE/, "the block starts with the fresh header");
+	assert.doesNotMatch(first.at(-1).content, /PI GOAL NOW/, "there is no second goal message");
 	const wire: any = {messages: [{role: "user", content: "Work on the goal"}, {role: "user", content: [{type: "text", text: first.at(-1).content, cache_control: {type: "ephemeral"}}]}]};
 	await h.handlers.before_provider_request!({payload: wire}, h.ctx);
 	assert.equal(wire.messages[0].content[0].cache_control.type, "ephemeral", "registered provider hook places the breakpoint on history");
@@ -814,15 +815,18 @@ test("prompt cache: normal and custom runs preserve history while refreshing all
 	assert.deepEqual(second.slice(2, 4), [toolCall, toolResult], "tool call and result stay adjacent");
 	assert.match(second[1].content, /PI GOAL ACTIVE/);
 	assert.equal(second.filter((m: any) => m.customType === "pi-goal-live-context").length, 1, "usage changes never disturb the retained block");
-	assert.doesNotMatch(second.at(-1) ? first.at(-1).content : "", /Autonomous runs/, "an unlimited allowance reports no runs line");
-	// An objective edit changes what the goal is about: the block restarts at the
-	// tail so no stale objective is left in front of the model.
+	assert.doesNotMatch(second[1].content, /12345 tokens/, "usage waits until the agent stops");
+	assert.doesNotMatch(second[1].content, /Autonomous runs/, "an unlimited allowance reports no runs line");
+	// A run boundary re-anchors the block: the next run starts from the new tail
+	// with the fresh objective and usage, and no stale copy is left behind.
+	await h.handlers.agent_end!({messages: []}, h.ctx);
 	h.core.state.goal!.objective = "Changed objective";
 	const third = await request();
 	assert.equal(third.filter((m: any) => m.customType === "pi-goal-live-context").length, 1);
 	assert.deepEqual(third.slice(0, 3), history);
 	assert.match(third.at(-1).content, /Changed objective/);
-	assert.match(third.at(-1).content, /Goal snapshot:/);
+	assert.match(third.at(-1).content, /12345 tokens/);
+	assert.match(third.at(-1).content, /^\[PI GOAL ACTIVE/);
 	assert.ok(!JSON.stringify(third).includes("Work on the goal\n"), "the old objective block is gone");
 	h.core.scheduler.begin(h.ctx); // Custom-message run bypassing preflight.
 	for (let i = 0; i < 4; i++) {

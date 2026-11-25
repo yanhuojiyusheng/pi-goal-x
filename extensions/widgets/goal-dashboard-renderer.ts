@@ -445,7 +445,7 @@ export function renderCurrentTaskBlock(
 	}
 	if (current.verificationContract) lines.push(...box.wrapped(t("Contract"), current.verificationContract));
 	if (current.evidence) lines.push(...box.wrapped(t("Evidence"), current.evidence));
-	if (current.inferred) lines.push(box.line(dim(theme, t("Inferred from the first pending task — no persisted current task."))));
+	if (current.inferred) lines.push(box.line(dim(theme, t("Inferred from task order for display."))));
 	return lines;
 }
 

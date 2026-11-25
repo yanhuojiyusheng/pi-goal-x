@@ -64,7 +64,7 @@ function fiveTaskTree(): GoalTask[] {
 			subtasks: [
 				task("t3.1", "Add loading state", { status: "complete", evidence: "Loading state added" }),
 				task("t3.2", "Generate timestamped filename", { status: "complete" }),
-				task("t3.3", "Add error handling"),
+				task("t3.3", "Add error handling", { verificationContract: "Errors are shown without losing the filters." }),
 			],
 		}),
 		task("t4", "Add documentation"),
@@ -195,7 +195,9 @@ test("palette: neutral-gray chrome, colour-coded content (§5)", () => {
 		fg: (color: string, value: string) => { captured.push([color, value]); return value; },
 		bold: (value: string) => value,
 	} as never;
-	const model = modelFor(withTasks(fiveTaskTree(), { currentTaskId: "t3" }));
+	const tasks = fiveTaskTree();
+	tasks[2]!.lightweightSubtasks = true;
+	const model = modelFor(withTasks(tasks, { currentTaskId: "t3" }));
 	assert.ok(model);
 	renderCompactDashboard(model, colorTheme, 100);
 	renderExpandedDashboard(model, colorTheme, 100);
@@ -381,20 +383,18 @@ test("compact: running with tasks at 100 shows status, header counts + bar, curr
 	assert.match(lines[0]!, /^╭─ pi-goal-x ─ Add CSV export to reports/);
 	assert.doesNotMatch(lines[0]!, /12m47s/, "usage moved from the header into the status line");
 	assert.match(lines[1]!, /goal: running \[12m47s 18\.2K\] \(\+2 open\)/);
-	// Header row: counts first (skipped counted as done → ✓3), task bar, then
-	// the current task's subtask bar beside it (`· Sub 2/3`); the standalone
-	// compact progress lines are gone.
-	assert.match(text, /├─ Tasks · ✓3 done · 2 open ─+ \[.*\] · Sub 2\/3 \[.*\] ┤/);
+	// Header counts and task bar remain; a current leaf has no subtask bar.
+	assert.match(text, /├─ Tasks · ✓3 done · 2 open ─+ \[.*\] ┤/);
 	assert.doesNotMatch(text, /Tasks  \[.*\] \d\/\d · \d+%/, "standalone compact progress line is gone");
 	assert.doesNotMatch(text, /Subtasks \[.*\] 2\/3 · 67%/, "standalone compact subtask line is gone from compact");
 	assert.match(text, /✓ t1  Review reports page and data source/);
-	assert.match(text, /▸ t3  Add the download button ☑ ▸ 2\/3/);
+	assert.match(text, /· t3  Add the download button ☑ ▸ 2\/3/);
 	assert.match(text, /· t4  Add documentation/);
 	assert.match(text, /~ t5  Add and run tests/);
 	assert.doesNotMatch(text, /· t4  Add documentation ▸/, "leaf tasks show no subtask marker");
 	assert.doesNotMatch(text, /\+[0-9]+ more task/, "all five top-level tasks fit at 100 cols");
-	assert.match(text, /Current  t3 · Add the download button/);
-	assert.match(text, /· Sub 2\/3 \[.*\]/, "subtask bar sits beside the task bar in the header");
+	assert.match(text, /Current  t3\.3 · Add error handling/);
+	assert.doesNotMatch(text, /· Sub /, "the current child is a leaf");
 	assert.match(text, /Verify   Run npm test with zero failures/);
 	assert.match(text, /File     \.pi\/goals\/active_goal_g1\.md/);
 	assert.match(lines.at(-1) ?? "", /Ctrl\+Shift\+T: expand tasks/);
@@ -407,7 +407,7 @@ test("compact: minimal mode at 40 keeps the essential summary", () => {
 	const text = lines.join("\n");
 	assert.match(text, /goal: running/);
 	assert.match(text, /Tasks · ✓3 done · 2 open/);
-	assert.match(text, /▸ Add the download button/);
+	assert.match(text, /▸ Add error handling/);
 	assert.doesNotMatch(text, /Other goals/);
 	assert.doesNotMatch(text, /File/);
 });
@@ -466,12 +466,13 @@ test("expanded: full dashboard at 100 shows sections and complete task tree", ()
 	assert.match(text, /3\/5 tasks · 60%/);
 	assert.match(text, /├─ Tasks /);
 	assert.match(text, /✓ t1  Review reports page and data source/);
-	assert.match(text, /▸ t3  Add the download button/);
+	assert.match(text, /· t3  Add the download button/);
+	assert.match(text, /▸ t3\.3  Add error handling/);
 	assert.match(text, /✓ t3\.1  Add loading state/);
 	assert.match(text, /· t4  Add documentation/);
 	assert.match(text, /├─ Current task /);
-	assert.match(text, /Subtasks \[.*\] 2\/3 · 67%/);
-	assert.match(text, /Contract: The button downloads a CSV using the active filters/);
+	assert.doesNotMatch(text, /Subtasks \[/, "the current child has no subtasks");
+	assert.match(text, /Contract: Errors are shown without losing the filters/);
 	assert.match(text, /├─ Verification /);
 	assert.match(text, /Run npm test with zero failures/);
 	assert.match(text, /├─ Recent activity /);
@@ -479,11 +480,31 @@ test("expanded: full dashboard at 100 shows sections and complete task tree", ()
 	assert.match(lines.at(-1) ?? "", /Esc\/Ctrl\+Shift\+T: collapse/);
 });
 
+test("a parent awaiting wrap-up is current with its contract and completed subtask bar", () => {
+	const tasks = fiveTaskTree();
+	tasks[2]!.subtasks![2]!.status = "complete";
+	const model = modelFor(withTasks(tasks, { currentTaskId: "t4" }));
+	assert.ok(model);
+	for (const width of WIDTHS) {
+		const compact = renderCompactDashboard(model, theme, width);
+		const expanded = renderExpandedDashboard(model, theme, width);
+		assertWidthSafe(compact, width);
+		assertWidthSafe(expanded, width);
+		assert.match(expanded.join("\n"), /▸ t3  Add the download button/);
+	}
+	const compact = renderCompactDashboard(model, theme, 100).join("\n");
+	assert.match(compact, /Current  t3 · Add the download button/);
+	assert.match(compact, /· Sub 3\/3 \[.*\]/);
+	const expanded = renderExpandedDashboard(model, theme, 100).join("\n");
+	assert.match(expanded, /Subtasks \[.*\] 3\/3 · 100%/);
+	assert.match(expanded, /Contract: The button downloads a CSV using the active filters/);
+});
+
 test("expanded: inferred current task is labelled", () => {
 	const model = modelFor(withTasks(fiveTaskTree()));
 	assert.ok(model);
 	const text = renderExpandedDashboard(model, theme, 100).join("\n");
-	assert.match(text, /Inferred from the first pending task/);
+	assert.match(text, /Inferred from task order for display\./);
 });
 
 test("expanded: current nested subtask shows its depth in the tree", () => {

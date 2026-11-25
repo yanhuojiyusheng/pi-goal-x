@@ -21,15 +21,16 @@ test("context display defaults off and explicit true preserves the existing coun
 	for (const usage of [undefined, {tokens: 0, contextWindow: 1000}, {tokens: 20, contextWindow: 1000}]) {
 		for (const maxAutonomousRuns of [undefined, 10]) for (const showAutonomousRuns of [false, true]) {
 			const enabled = goalPromptParts(goal, {showContextUsage: true, maxAutonomousRuns, showAutonomousRuns}, usage);
-			assert.match(enabled.state, /Context snapshot:/);
+			assert.match(enabled.pointer, /Context snapshot:/);
 			for (const value of [undefined, false]) {
 				const hidden = goalPromptParts(goal, {showContextUsage: value, maxAutonomousRuns, showAutonomousRuns}, usage);
-				assert.equal(hidden.state, enabled.state.replace(`\n${contextUsageLine(usage)}`, ""));
-				assert.doesNotMatch(hidden.state, /Context snapshot:|\n\n\n/);
+				assert.equal(hidden.state, enabled.state, "the policy never carries the context snapshot");
+				assert.equal(hidden.pointer, enabled.pointer.replace(`\n${contextUsageLine(usage)}`, ""));
+				assert.doesNotMatch(hidden.pointer, /Context snapshot:|\n\n/);
 			}
 		}
 	}
-	assert.doesNotMatch(goalPromptParts(goal).state, /Context snapshot:/);
+	assert.doesNotMatch(goalPromptParts(goal).pointer, /Context snapshot:/);
 });
 
 for (const mode of ["ordinary", "audit", "wait"]) test(`registered context toggles preserve the prefix and pending ${mode} state`, async () => {
@@ -153,7 +154,7 @@ test("changing and removing budget or run limits replaces the single block at it
 	retention.clear("s");
 	const refreshed = retention.apply("s", [...base, { role: "assistant", content: "work" }], { ...parts, scope: "g" });
 	assert.equal(refreshed.transientContents.length, 1, "the new run sends one block, not a superseding pair");
-	assert.match(refreshed.transientContents[0]!, /Limits: lifetime tokens=none; runs=unlimited\./);
-	assert.doesNotMatch(refreshed.transientContents[0]!, /lifetime tokens=100/);
+	assert.doesNotMatch(refreshed.transientContents[0]!, /lifetime tokens=100|runs=10/);
+	assert.doesNotMatch(refreshed.transientContents[0]!, /Limits:/, "no limit is advertised once none is set");
 	assert.match(modelBudgetLine({ tokenBudget: 1, usage: { tokensUsed: 2 } })!, /spending cap, not context capacity/);
 });

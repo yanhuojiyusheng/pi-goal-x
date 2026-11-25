@@ -54,17 +54,19 @@ test("the goal policy and task list do not change with the clock, usage or revis
 	later.usage = { ...later.usage, activeSeconds: later.usage.activeSeconds + 7200, tokensUsed: later.usage.tokensUsed + 900_000 };
 	if (later.scheduler) later.scheduler = { ...later.scheduler, used: later.scheduler.used + 3 };
 	const second = goalPromptParts(later, { maxAutonomousRuns: 5 });
-	const withoutUsage = (text: string) => text.replace(/Goal snapshot:.*$/s, "");
-	assert.equal(withoutUsage(second.state), withoutUsage(first.state));
-	assert.notEqual(second.state, first.state, "only the usage line moved; the policy and task list did not");
+	// The header carries the fresh focus and usage; the policy under it does not
+	// depend on the clock, the token count or the revision.
+	const withoutHeader = (text: string) => text.slice(text.indexOf("\n") + 1);
+	assert.equal(withoutHeader(second.state), withoutHeader(first.state));
+	assert.notEqual(second.state, first.state, "only the header moved; the policy and task list did not");
 });
 
 test("the goal policy block and a ten-task list stay within their size budget", () => {
 	const parts = goalPromptParts(goalWithTasks(10), { maxAutonomousRuns: 0 });
 	// About 650 tokens for the policy and 170 for the list today.
 	assert.ok(parts.state.length <= 3_900, `block is ${parts.state.length} characters (bound 3900)`);
-	const tasks = parts.state.slice(parts.state.indexOf("[TASK LIST"));
-	assert.ok(tasks.slice(0, tasks.indexOf("Goal snapshot:")).length <= 900, `task list is ${tasks.length} characters (bound 900)`);
+	const tasks = parts.state.slice(parts.state.indexOf("[TASKS —"));
+	assert.ok(tasks.length <= 900, `task list is ${tasks.length} characters (bound 900)`);
 });
 
 test("pausing, resuming and changing tasks never change the advertised tools", async () => {

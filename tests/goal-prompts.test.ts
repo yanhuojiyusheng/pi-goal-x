@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createGoal } from "../extensions/goal-record.ts";
+import { createGoal, type GoalTask, type GoalTaskList } from "../extensions/goal-record.ts";
 import {
 	CHECKPOINT_TRIGGER_MAX_CHARS,
 	checkpointTriggerPrompt,
 	promptProfile,
 	goalPrompt,
+	goalPromptBlock,
 	goalPromptParts,
 	staleContinuationPrompt,
 	taskListBlock,
@@ -33,12 +34,12 @@ test("cache namespace: checkpoint marker never leaks into goalPrompt for the sam
 	const continuation = checkpointTriggerPrompt(current.id);
 	const active = goalPrompt(current);
 	assert.match(continuation, /^<pi_goal_continuation goal_id="same-goal" kind="checkpoint" v="2"\/>$/);
-	assert.match(active, /^\[PI GOAL ACTIVE goalId=same-goal\]/);
+	assert.match(active, /^\[PI GOAL ACTIVE goalId=same-goal /);
 	assert.doesNotMatch(active, /kind="checkpoint" v="2"/);
 	const current2 = goal({ id: "same-goal-2" });
 	const active2 = goalPrompt(current2);
 	const continuation2 = checkpointTriggerPrompt(current2.id);
-	assert.match(active2, /^\[PI GOAL ACTIVE goalId=same-goal-2\]/);
+	assert.match(active2, /^\[PI GOAL ACTIVE goalId=same-goal-2 /);
 	assert.doesNotMatch(continuation2, /PI GOAL ACTIVE/);
 });
 
@@ -51,7 +52,7 @@ test("goalPrompt wraps objective as untrusted data and includes Sisyphus discipl
 	assert.match(prompt, /&lt;untrusted_objective&gt;x&lt;\/untrusted_objective&gt;/);
 	assert.match(prompt, /\[SISYPHUS STYLE goalId=/);
 	assert.match(prompt, /Follow the user's ordered plan faithfully/);
-	assert.match(prompt, /update_goal\(\{status: "blocked"\}\)/);
+	assert.match(prompt, /update_goal\(\{status:"blocked"\}\)/);
 });
 
 test("continuation checkpoint is a bounded v2 marker carrying only the goal id", () => {
@@ -109,17 +110,15 @@ test("taskListBlock renders correctly with mixed statuses", () => {
 
 	const block = taskListBlock(g);
 	assert.ok(block);
-	assert.match(block, /\[TASK LIST/);
-	assert.match(block, /1\/3 tasks complete/);
+	assert.match(block, /\[TASKS/);
+	assert.match(block, /1\/3 complete/);
 	assert.match(block, /1 skipped/);
 	// P1-4: completed/skipped collapse to counts; only pending renders inline.
 	assert.equal(block.includes("[x] t1"), false, "completed tasks collapse to the header count");
 	assert.equal(block.includes("[~] t3"), false, "skipped tasks collapse to the header count");
-	assert.match(block, /\[ \] t2/);
+	assert.match(block, /Current: t2/);
 	assert.match(block, /TASK GATE/);
-	// PR E compact-v2: visible pending items make the separate "Next pending"
-	// line redundant (it would duplicate t2).
-	assert.equal(block.includes("Next pending: t2"), false, "next-pending duplicates a visible pending item");
+	assert.doesNotMatch(block, /Next pending:/);
 });
 
 test("taskListBlock shows TASK GATE when blockCompletion enabled and pending tasks exist", () => {
@@ -163,13 +162,13 @@ test("goalPrompt includes taskListBlock when taskList is present", () => {
 		proposedAt: "2026-05-27T00:00:00.000Z",
 	};
 	const prompt = goalPrompt(g);
-	assert.match(prompt, /\[TASK LIST/);
-	assert.match(prompt, /\[ \] t1/);
+	assert.match(prompt, /\[TASKS/);
+	assert.match(prompt, /Current: t1/);
 });
 
 test("goalPrompt omits taskListBlock when no taskList", () => {
 	const prompt = goalPrompt(goal());
-	assert.equal(prompt.includes("[TASK LIST"), false);
+	assert.doesNotMatch(prompt, /\[TASK(?: LIST|S)/);
 });
 
 test("continuation checkpoint never embeds the task list (issue #30)", () => {
@@ -181,13 +180,13 @@ test("continuation checkpoint never embeds the task list (issue #30)", () => {
 		proposedAt: "2026-05-27T00:00:00.000Z",
 	};
 	const continuation = checkpointTriggerPrompt(g.id);
-	assert.equal(continuation.includes("[TASK LIST"), false);
+	assert.doesNotMatch(continuation, /\[TASK(?: LIST|S)/);
 	assert.equal(continuation, '<pi_goal_continuation goal_id="goal-t1" kind="checkpoint" v="2"/>', "marker carries only goal id metadata");
 });
 
-test("checkpoint trigger omits taskListBlock when no taskList", () => {
+test("continuation checkpoint omits taskListBlock when no taskList", () => {
 	const continuation = checkpointTriggerPrompt(goal().id);
-	assert.equal(continuation.includes("[TASK LIST"), false);
+	assert.doesNotMatch(continuation, /\[TASK(?: LIST|S)/);
 });
 
 // ── Subtask hierarchical display ──────────────────────────────────────────────
@@ -207,12 +206,12 @@ test("taskListBlock renders subtasks indented", () => {
 	};
 	const block = taskListBlock(g);
 	assert.ok(block);
-	assert.match(block, /\[ \] t1/);
-	// Subtasks indented (pending only; the completed t1b collapses to the count)
-	assert.match(block, /  \[ \] t1a/);
+	assert.match(block, /Current: t1a/);
+	// The completed subtask collapses to the count.
+	assert.doesNotMatch(block, /^\[ \]/m);
 	assert.equal(block.includes("[x] t1b"), false, "completed subtask collapses to the count (P1-4)");
 	// All tasks counted: t1 + t1a + t1b = 3 total, 1 complete
-	assert.match(block, /1\/3 tasks complete/);
+	assert.match(block, /1\/3 complete/);
 });
 
 test("taskListBlock renders nested subtasks up to depth limit", () => {
@@ -232,11 +231,11 @@ test("taskListBlock renders nested subtasks up to depth limit", () => {
 	};
 	const block = taskListBlock(g);
 	assert.ok(block);
-	assert.match(block, /\[ \] t1/);
-	assert.match(block, /\[ \] t1a/);
+	assert.match(block, /Current: t1a/);
+	assert.match(block, /Next pending: t1 · Parent/);
 	assert.equal(block.includes("[x] t1ai"), false, "completed grandchild collapses to the count (P1-4)");
 	// 3-level hierarchy: 3 tasks, 1 complete
-	assert.match(block, /1\/3 tasks complete/);
+	assert.match(block, /1\/3 complete/);
 });
 
 test("taskListBlock shows lightweight subtask indicator", () => {
@@ -282,10 +281,10 @@ test("goalPrompt includes subtask rendering", () => {
 		proposedAt: "2026-05-27T00:00:00.000Z",
 	};
 	const prompt = goalPrompt(g);
-	assert.match(prompt, /\[ \] t1/);
+	assert.match(prompt, /Current: t1/);
 	// P1-4: the completed child collapses to the header count.
 	assert.equal(prompt.includes("[x] t1a"), false, "completed subtask collapses to the count (P1-4)");
-	assert.match(prompt, /1\/2 tasks complete/);
+	assert.match(prompt, /1\/2 complete/);
 });
 
 test("continuation checkpoint omits subtask rendering entirely", () => {
@@ -340,10 +339,10 @@ test("taskListBlock surfaces the persisted current task with its contract", () =
 	};
 	g.currentTaskId = "t2";
 	const block = taskListBlock(g);
-	assert.match(block, /Current: t2 · Task two \(contract: Run the check\.\)/);
-	// No focus: no Current line.
+	assert.match(block, /Current: t2 · Task two\nDone when: Run the check\./);
+	// Without persisted focus, the first pending task is inferred.
 	g.currentTaskId = undefined;
-	assert.doesNotMatch(taskListBlock(g), /Current:/);
+	assert.match(taskListBlock(g), /Current: t1/);
 	// Focus on a contract-less task: no contract suffix.
 	g.currentTaskId = "t1";
 	assert.match(taskListBlock(g), /Current: t1 · Task one\n/);
@@ -360,7 +359,31 @@ test("prompt cache key changes when currentTaskId changes", () => {
 	g.currentTaskId = "t1";
 	const after = goalPrompt(g);
 	assert.match(after, /Current: t1 · Task one/);
-	assert.doesNotMatch(before, /Current:/);
+	assert.match(before, /Now: no task is marked current/);
+	assert.doesNotMatch(after, /Now: no task is marked current/);
+});
+
+test("a task update rewrites the one shared block, so its task state can never drift (#108)", () => {
+	// main's #108 kept a static policy and moved the task list into a per-request
+	// counter block. This tree merges both into one replaced block instead, so the
+	// equivalent guarantee is the opposite assertion: the policy text itself does
+	// change on a task update, and that is safe because the block is replaced
+	// whole rather than appended behind a cached prefix.
+	const g = goal({ id: "task-update-goal" });
+	g.taskList = {
+		tasks: [{ id: "a", title: "First", status: "complete" }, { id: "b", title: "Second", status: "pending" }],
+		blockCompletion: true,
+		proposedAt: "2026-01-01T00:00:00.000Z",
+	};
+	g.currentTaskId = "b";
+	const before = goalPromptParts({ ...g, currentTaskId: "a", taskList: { ...g.taskList, tasks: [{ id: "a", title: "First", status: "pending" }, { id: "b", title: "Second", status: "pending" }] } });
+	const after = goalPromptParts(g);
+	assert.notEqual(after.state, before.state, "the task list rides in the replaced block, not behind it");
+	assert.match(after.state, /\[TASKS — 1\/2 complete\]/);
+	assert.match(after.state, /Current: b · Second/);
+	assert.equal(after.pointer, "", "a focused pending task needs no runtime pointer");
+	assert.equal(goalPromptBlock(g), [after.state, after.pointer].filter(Boolean).join("\n"), "the block is the policy plus the pointer, nothing else");
+	assert.equal((after.state.match(/\[PI GOAL ACTIVE/g) ?? []).length, 1, "one header per request");
 });
 
 // ── PR E: single-source task block + prompt profiles ─────────────────────────
@@ -380,7 +403,7 @@ test("compact-v2 renders the current task exactly once in the task block", () =>
 	const block = taskListBlock(g);
 	assert.equal((block.match(/t2 · Current task/g) ?? []).length, 1, "current task rendered once");
 	assert.doesNotMatch(block, /\[ \] t2:/, "current task excluded from generic pending list");
-	assert.match(block, /\[ \] t3:/, "other pending items still render");
+	assert.match(block, /Next pending: t3 · Later task/);
 });
 
 test("promptProfile defaults to compact-v2; legacy-v1 is opt-in via env", () => {
@@ -432,7 +455,7 @@ test("legacy-v1 restores pre-PR-E wording but never full checkpoint persistence"
 test("allowance configuration refreshes cached guidance without bloating disabled prompts", () => {
 	const current = goal();
 	const off = goalPrompt(current, { maxAutonomousRuns: 0 });
-	assert.match(off, /agents may set it/);
+	assert.match(off, /Limits: runs=0\./);
 	assert.doesNotMatch(off, /Saved decisions terminate/);
 	const on = goalPrompt(current, { maxAutonomousRuns: 4 });
 	assert.match(on, /no scheduling declaration is required/);
@@ -453,12 +476,131 @@ test("allowance configuration refreshes cached guidance without bloating disable
 	assert.match(zero, /0\/0 \(automatic continuation disabled\)/);
 });
 
-test("a task update changes only the task section of the one block (#108)", () => {
-	const tasks = [{ id: "a", title: "First", status: "pending" as const }, { id: "b", title: "Second", status: "pending" as const }];
-	const before = goal({ taskList: { tasks, blockCompletion: true, proposedAt: "2026-01-01T00:00:00Z" } });
-	const after = { ...before, currentTaskId: "b", taskList: { ...before.taskList!, tasks: [{ ...tasks[0]!, status: "complete" as const }, tasks[1]!] } };
-	const a = goalPromptParts(before), b = goalPromptParts(after);
-	assert.equal(b.state.slice(0, a.state.indexOf("[TASK LIST")), a.state.slice(0, a.state.indexOf("[TASK LIST")), "the policy text before the task list is unchanged");
-	assert.notEqual(b.state, a.state, "the task list itself changed");
-	assert.match(b.state, /TASK LIST — 1\/2 tasks complete/);
+test("focused task details live beside a single ACTIVE header", () => {
+	const goal = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
+	goal.usage = { tokensUsed: 987654, activeSeconds: 600 };
+	goal.taskList = {
+		tasks: [
+			{ id: "task-1", title: "Done task", status: "complete" },
+			{ id: "task-2", title: "Write the exporter", status: "pending", verificationContract: "Only filtered rows are exported" },
+			{ id: "task-3", title: "Document it", status: "pending" },
+		],
+		blockCompletion: false,
+	} as GoalTaskList;
+	goal.currentTaskId = "task-2";
+	const { state, pointer } = goalPromptParts(goal);
+	assert.equal(state.split("\n")[0], `[PI GOAL ACTIVE goalId=${goal.id} taskId=task-2 10m0s · 987654 tokens]`);
+	assert.equal(pointer, "");
+	assert.match(state, /\[TASKS — 1\/3 complete\]/);
+	assert.match(state, /Current: task-2 · Write the exporter/);
+	assert.match(state, /Only filtered rows are exported/);
+	assert.match(state, /Next pending: task-3 · Document it/);
+	assert.match(state.split("\n")[0]!, /987654 tokens/);
+
+	const withContext = goalPromptParts(goal, { maxAutonomousRuns: 4, showContextUsage: true }, { tokens: 40, contextWindow: 100 }).pointer;
+	assert.match(withContext, /Autonomous runs: 0\/4/);
+	assert.match(withContext, /Context snapshot: 40\/100 tokens \(40%\)/);
+	assert.doesNotMatch(withContext, /^(Now|Then|Progress):/m);
+
+	goal.currentTaskId = undefined;
+	const noCurrent = goalPromptParts(goal).pointer;
+	assert.match(noCurrent, /Start with the first pending task: task-2 · Write the exporter/);
+	assert.match(noCurrent, /Mark it current with update_goal_task/);
+	assert.doesNotMatch(noCurrent, /^Progress:/m);
+	const allComplete = {
+		...goal,
+		taskList: { ...goal.taskList, tasks: goal.taskList.tasks.map(task => ({ ...task, status: "complete" as const })) },
+	};
+	assert.equal(goalPromptParts(allComplete).pointer, "Now: no task is marked current.");
+
+	const noTasks = { ...goal, taskList: undefined };
+	assert.match(goalPrompt(noTasks), /keep advancing the objective above/);
+	assert.match(goalPrompt(goal, { disableTasks: true }), /keep advancing the objective above/);
+});
+
+test("the compact task list includes the next actionable task title", () => {
+	const current = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
+	current.taskList = {
+		blockCompletion: false,
+		proposedAt: "2026-01-01T00:00:00.000Z",
+		tasks: Array.from({ length: 6 }, (_, i) => ({ id: `task-${i + 1}`, title: `Step ${i + 1}`, status: "pending" as const })),
+	};
+	current.currentTaskId = "task-5";
+	const { state, pointer } = goalPromptParts(current);
+	assert.match(state, /Current: task-5 · Step 5/);
+	assert.match(state, /Next pending: task-6 · Step 6/);
+	assert.doesNotMatch(state, /Next pending: task-3/, "next work follows the current task");
+	assert.match(state, /4 other pending task entries omitted/);
+	assert.match(state.split("\n")[0]!, /taskId=task-5\]/);
+	assert.equal(pointer, "");
+});
+
+test("the ACTIVE header and unfocused-task example keep task ids intact", () => {
+	const longId = `task-${"x".repeat(120)}`;
+	const longTitle = `T${"y".repeat(400)}`;
+	const goal = createGoal({ objective: "Ship the export", autoContinue: true, sisyphus: false });
+	goal.taskList = {
+		blockCompletion: false,
+		tasks: [
+			{ id: longId, title: longTitle, status: "pending", verificationContract: `C${"z".repeat(900)}` },
+			{ id: "task-2", title: "Follow up", status: "pending" },
+		],
+	} as GoalTaskList;
+	goal.currentTaskId = longId;
+	const pointer = goalPromptParts(goal).state.split("\n")[0]!;
+	assert.ok(pointer.includes(`taskId=${longId}]`) || pointer.includes(`taskId=${longId} `), "the header carries the full id");
+	// The list excerpts ids at 80 chars; the header remains exact.
+	assert.doesNotMatch(pointer, /^(Now|Then|Progress):/m);
+	assert.doesNotMatch(pointer, /y{200}|z{200}/, "the pointer carries neither the long title nor the long contract");
+
+	// Without a focused task the copy-pasteable example must carry the whole id as well.
+	goal.currentTaskId = undefined;
+	assert.ok(goalPromptParts(goal).pointer.includes(`update_goal_task({task_id:"${longId}", status:"start"})`), "a truncated id cannot be passed back");
+});
+
+test("a focused phase uses its open child's id in the ACTIVE header", () => {
+	const phased = (status: { p1?: string; p11?: string; p12?: string } = {}): GoalTaskList => ({
+		blockCompletion: false,
+		tasks: [
+			{
+				id: "p1", title: "Stage one", status: (status.p1 ?? "pending") as GoalTask["status"],
+				verificationContract: "Stage one ships an importable package",
+				subtasks: [
+					{ id: "p1.1", title: "Create the directories", status: (status.p11 ?? "pending") as GoalTask["status"], verificationContract: "Only src/ is created" },
+					{ id: "p1.2", title: "Write the CLI entry", status: (status.p12 ?? "pending") as GoalTask["status"] },
+				],
+			},
+			{ id: "p2", title: "Stage two", status: "pending", subtasks: [{ id: "p2.1", title: "Create the schema", status: "pending" }] },
+		],
+	} as GoalTaskList);
+	const goal = createGoal({ objective: "Port the service", autoContinue: true, sisyphus: false });
+	goal.taskList = phased();
+	goal.currentTaskId = "p1";
+	const { state, pointer: phaseFocused } = goalPromptParts(goal);
+	assert.equal(phaseFocused, "");
+	assert.equal(state.split("\n")[0], `[PI GOAL ACTIVE goalId=${goal.id} taskId=p1.1]`);
+	assert.equal(goalPromptParts({ ...goal, currentTaskId: "p1.1" }).pointer, phaseFocused);
+	assert.match(state, /Current: p1\.1 · Create the directories/);
+	assert.match(state, /Stage one ships an importable package/, "the phase contract stays in the policy block");
+
+	// Every child done but the phase open: the phase itself is the step, and no Phase line appears.
+	goal.taskList = phased({ p11: "complete", p12: "complete" });
+	const phaseDone = goalPromptParts(goal).state.split("\n")[0]!;
+	assert.match(phaseDone, /taskId=p1\]/);
+	assert.match(goalPromptParts(goal).state, /Current: p1 · Stage one/);
+	assert.doesNotMatch(phaseDone, /^(Now|Then|Progress):/m);
+
+	// Without a focused task the suggestion descends too.
+	goal.taskList = phased();
+	assert.match(goalPromptParts({ ...goal, currentTaskId: undefined }).pointer, /Start with the first pending task: p1\.1 · Create the directories/);
+
+	// Lightweight children are notes on their parent, so the parent stays the unit and no Phase line appears.
+	const lightweight = createGoal({ objective: "Write the docs", autoContinue: true, sisyphus: false });
+	lightweight.taskList = { blockCompletion: false, tasks: [{
+		id: "docs", title: "Write the docs", status: "pending", lightweightSubtasks: true,
+		subtasks: [{ id: "docs.1", title: "README", status: "pending" }],
+	}] } as GoalTaskList;
+	lightweight.currentTaskId = "docs";
+	assert.match(goalPromptParts(lightweight).state, /taskId=docs\]/);
+	assert.match(goalPromptParts(lightweight).state, /Current: docs · Write the docs/);
 });
