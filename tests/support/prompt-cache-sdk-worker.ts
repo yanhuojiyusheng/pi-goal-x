@@ -115,7 +115,7 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			runtime.registerProvider("advance-fixture", {baseUrl: "http://127.0.0.1:1", api: flavor, apiKey: "fixture-only", models: [{id: "fixture", name: "fixture", reasoning: false, input: ["text"], cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, contextWindow: 200000, maxTokens: 128}]});
 			const model = runtime.getModel("advance-fixture", "fixture")!;
 			const retention = new LiveTailRetention();
-			const capture = async (session: any[], fresh: { state: string; ephemeral: string }) => {
+			const capture = async (session: any[], fresh: { state: string; scope: string }) => {
 				const { messages, transientContents } = retention.apply("advance-session", filterGoalSessionContext(session) ?? session, fresh);
 				let payload: any;
 				const wire = convertToLlm(messages);
@@ -132,11 +132,12 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			// as the SDK produces for real turns (the token estimator reads usage).
 			const turn = (n: number, timestamp: number) => ({role: "assistant", content: [{type: "text", text: `completed result ${n}`}], stopReason: "stop", usage: {input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15}, timestamp});
 			const state = "[PI GOAL ACTIVE goalId=fixture]\nObjective: hold the line";
-			const first = await capture(session, {state, ephemeral: "Usage: 100 tokens"});
+			const fresh = (usage: string) => ({state: `${state}\n${usage}`, scope: "g"});
+			const first = await capture(session, fresh("Usage: 100 tokens"));
 			session.push(turn(1, 2));
-			const second = await capture(session, {state, ephemeral: "Usage: 200 tokens"});
+			const second = await capture(session, fresh("Usage: 200 tokens"));
 			session.push(turn(2, 3));
-			const third = await capture(session, {state, ephemeral: "Usage: 300 tokens"});
+			const third = await capture(session, fresh("Usage: 300 tokens"));
 			const conversation = (p: any) => p.messages ?? p.input;
 			const a = conversation(first), b = conversation(second), c = conversation(third);
 			assert.ok(a.length < b.length && b.length < c.length, "each advanced request carries its completed turn");
@@ -152,19 +153,19 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 				{type: "toolCall", id: "call_b", name: "read", arguments: {path: "b"}},
 			], stopReason: "toolUse"});
 			for (const id of ["call_a", "call_b"]) session.push({role: "toolResult", toolCallId: id, toolName: "read", content: [{type: "text", text: id}], isError: false, timestamp: 5});
-			const fourth = conversation(await capture(session, {state, ephemeral: "Usage: 400 tokens"}));
+			const fourth = conversation(await capture(session, fresh("Usage: 400 tokens")));
 			assert.deepEqual(fourth.slice(0, c.length - 1), c.slice(0, -1));
 			assert.ok(!JSON.stringify(fourth).includes("No result provided"), "serializer never synthesizes an orphan result");
-			assert.deepEqual(conversation(await capture(session, {state, ephemeral: "Usage: 400 tokens"})), fourth, "retry does not grow the prompt");
+			assert.deepEqual(conversation(await capture(session, fresh("Usage: 400 tokens"))), fourth, "retry does not grow the prompt");
 			session.push(turn(4, 6), {role: "user", content: "continue", timestamp: 7});
-			const fifth = conversation(await capture(session, {state, ephemeral: "Usage: 500 tokens"}));
+			const fifth = conversation(await capture(session, fresh("Usage: 500 tokens")));
 			assert.deepEqual(fifth.slice(0, fourth.length - 1), fourth.slice(0, -1));
 			// A result arriving after a captured call must remove the unsafe anchor.
 			session.push({...turn(5, 8), content: [{type: "toolCall", id: "delayed", name: "read", arguments: {path: "missing"}}], stopReason: "toolUse"});
-			await capture(session, {state, ephemeral: "Usage: 600 tokens"});
+			await capture(session, fresh("Usage: 600 tokens"));
 			session.push({role: "custom", customType: GOAL_AUDIT_ENTRY, content: "DISPLAY ONLY AUDIT", display: true, timestamp: 9});
 			session.push({role: "toolResult", toolCallId: "delayed", toolName: "read", content: [{type: "text", text: "file missing"}], isError: true, timestamp: 10});
-			const delayed = await capture(session, {state, ephemeral: "Usage: 700 tokens"});
+			const delayed = await capture(session, fresh("Usage: 700 tokens"));
 			const delayedText = JSON.stringify(conversation(delayed));
 			assert.equal(delayedText.split("Objective: hold the line").length - 1, 1, "exactly one current policy survives");
 			assert.ok(!delayedText.includes("DISPLAY ONLY AUDIT"));
@@ -175,23 +176,23 @@ for (const flavor of ["openai-completions", "openai-responses"] as const) {
 			const resultIndex = delayedWire.findIndex((m: any) => m.call_id === "delayed" && m.type === "function_call_output" || m.tool_call_id === "delayed");
 			assert.ok(callIndex >= 0);
 			assert.equal(resultIndex, callIndex + 1, "wire result stays adjacent to the delayed call");
-			// A policy edit is appended and supersedes the old block; compaction resets, while host/tools stay stable.
+			// A policy edit closes the run's block: the new scope replaces it at the tail.
 			const nextState = "[PI GOAL ACTIVE goalId=fixture]\nObjective: revised";
-			const edited = await capture(session, {state: nextState, ephemeral: "Usage: 800 tokens"});
+			const edited = await capture(session, {state: `${nextState}\nUsage: 800 tokens`, scope: "g2"});
 			const editedText = JSON.stringify(conversation(edited));
-			assert.ok(editedText.includes("Objective: hold the line") && editedText.includes("Objective: revised"), "old block stays so the prefix survives");
-			assert.ok(editedText.includes("Only the latest goal policy block above applies"));
+			assert.ok(!editedText.includes("Objective: hold the line"), "the superseded block is gone, not stacked");
+			assert.equal(editedText.split("Objective: revised").length - 1, 1, "exactly one current policy");
 			session.splice(0, session.length, {role: "user", content: "Compacted summary", timestamp: 11});
 			for (let n = 0; n < 40; n++) {
-				const fresh = {state: nextState, ephemeral: `Goal snapshot: ${900 + n} tokens`};
-				const payload = await capture(session, fresh);
+				const tick = {state: `${nextState}\nGoal snapshot: ${900 + n} tokens`, scope: "g2"};
+				const payload = await capture(session, tick);
 				const text = JSON.stringify(conversation(payload));
 				assert.ok(!text.includes("Usage: 800 tokens"));
-				assert.equal(text.split("Objective: revised").length - 1, 1);
-				assert.ok(text.split("Goal snapshot:").length - 1 <= 31);
+				assert.equal(text.split("Objective: revised").length - 1, 1, "exactly one block per request");
+				assert.ok(text.split("Goal snapshot:").length - 1 <= 1, "no superseded copies accumulate");
 				assert.deepEqual(payload.tools, first.tools, "tool schemas stay fixed through resets");
 				assert.deepEqual(conversation(payload).filter((m: any) => m.role === "system" || m.role === "developer"), a.filter((m: any) => m.role === "system" || m.role === "developer"));
-				assert.deepEqual(conversation(await capture(session, fresh)), conversation(payload), "retry at/after eviction is identical");
+				assert.deepEqual(conversation(await capture(session, tick)), conversation(payload), "retry at/after eviction is identical");
 				session.push(turn(n + 6, n + 12));
 			}
 		} finally { rmSync(cwd, {recursive: true, force: true}); }
@@ -211,7 +212,7 @@ for (const flavor of ["anthropic-messages", "anthropic-compatible-completions"] 
 				const retention = new LiveTailRetention();
 				const session: any[] = [{role: "user", content: "real history", timestamp: 1}];
 				for (let n = 1; n <= 3; n++) {
-					const {messages, transientContents} = retention.apply("split-session", session, {state: "policy", ephemeral: `Usage: ${n}`});
+					const {messages, transientContents} = retention.apply("split-session", session, {state: `policy\nUsage: ${n}`, scope: "g"});
 					let payload: any;
 					let before: any[] = [];
 					const blocks = () => payload.messages.filter((m: any) => m.role !== "system" && m.role !== "developer").flatMap((m: any) => Array.isArray(m.content) ? m.content : []);

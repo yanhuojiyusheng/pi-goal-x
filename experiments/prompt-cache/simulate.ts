@@ -30,6 +30,8 @@ export interface SimParts {
 export interface Strategy {
 	name: string;
 	build(base: readonly Msg[], parts: SimParts): Msg[];
+	/** The agent run finished; the next turn starts a new one. */
+	endRun?(): void;
 }
 
 const live = (content: string): Msg => ({ role: "custom", content, timestamp: 0 });
@@ -44,24 +46,48 @@ export function productionStrategy(): Strategy {
 	const retention = new LiveTailRetention();
 	return {
 		name: "production",
+		// A lifecycle change is a different scope, so the block re-anchors with the
+		// text the model must follow now instead of holding the old one.
 		build: (base, parts) => retention.apply("s", base, {
-			state: parts.policy,
-			counters: parts.tasks || undefined,
-			ephemeral: join(parts.steering, parts.usage),
-			scope: "goal",
-		} as never).messages as Msg[],
+			state: join(parts.policy, parts.steering, parts.tasks, parts.usage),
+			scope: parts.policy.includes("[PI GOAL PAUSED") ? "paused" : "goal",
+		}).messages as Msg[],
+		// A goal turn is one agent run: the block refreshes at the run boundary,
+		// exactly as `extensions/goal-events.ts` clears it on `agent_end`.
+		endRun: () => retention.clear("s"),
 	};
 }
 
-/** Behaviour of the code the simulator runs on, using the original {state, counters} call. */
-export function currentStrategy(): Strategy {
-	const retention = new LiveTailRetention();
+/**
+ * The 0.35.1 split layout, emulated locally so the "before" column keeps its
+ * meaning on this tree: the policy block is appended when it changes, the task
+ * list is appended as a snapshot when it changes, and usage/steering ride at
+ * the end of each request and are never kept. Nothing is dropped at a run
+ * boundary, so a new turn reuses the previous turn's whole request.
+ */
+export function splitStrategy(): Strategy {
+	let tails: Array<{ anchor: number; content: string }> = [];
+	let lastPolicy: string | undefined;
+	let lastTasks: string | undefined;
 	return {
-		name: "current",
-		build: (base, parts) => retention.apply("s", base, {
-			state: join(parts.policy, parts.steering),
-			counters: parts.tasks || parts.usage ? join(parts.tasks, parts.usage) : undefined,
-		}).messages as Msg[],
+		name: "0.35.1 split",
+		build(base, parts) {
+			const messages: Msg[] = [...base];
+			for (let i = tails.length - 1; i >= 0; i--) messages.splice(tails[i]!.anchor, 0, live(tails[i]!.content));
+			if (lastPolicy !== parts.policy) {
+				const content = lastPolicy === undefined ? parts.policy : `${SUPERSEDE}\n${parts.policy}`;
+				messages.push(live(content));
+				tails.push({ anchor: base.length, content });
+				lastPolicy = parts.policy;
+			}
+			if (parts.tasks && lastTasks !== parts.tasks) {
+				messages.push(live(parts.tasks));
+				tails.push({ anchor: base.length, content: parts.tasks });
+				lastTasks = parts.tasks;
+			}
+			if (parts.steering || parts.usage) messages.push(live(join(parts.steering, parts.usage)));
+			return messages;
+		},
 	};
 }
 
@@ -173,11 +199,14 @@ export const SCENARIOS: Scenario[] = [
 const SYSTEM_CHARS = 32_000; // about 8k tokens of host prompt and tool schemas
 
 export interface Result {
+	/** Uncached tokens paid at each request; diagnostic only. */
 	requests: number;
 	totalTokens: number;
 	cachedTokens: number;
-	/** Requests after the first whose cached prefix lost more than half the previous request. */
+	/** Requests inside a run whose cached prefix lost more than half the previous request. */
 	bigBreaks: number;
+	/** Uncached characters paid at each run boundary (first request of a run after the first). */
+	boundaryChars: number;
 	cacheShare: number;
 	/** Cost in input-token units, with cached reads at one tenth of the price. */
 	cost: number;
@@ -201,7 +230,11 @@ export function run(strategy: Strategy, scenario: Scenario, seed = 7): Result {
 	const history: Msg[] = [{ role: "user", content: "Please carry out the goal.", timestamp: 1 }];
 	let time = 2;
 	let previous: string[] = [];
-	let requests = 0, totalChars = 0, cachedChars = 0, bigBreaks = 0, previousLen = 0, cost = 0;
+	let requests = 0, totalChars = 0, cachedChars = 0, bigBreaks = 0, boundaryChars = 0, previousLen = 0, cost = 0;
+	// The first request of a run pays for whatever the previous run left behind
+	// the retained block. It is a known, bounded cost of refreshing the block at
+	// the run boundary, not a prefix break inside the run.
+	let freshRun = true;
 	let paused = 0, finished = 0, steeringTurns = 0, stallTurns = 0;
 	const system = "S".repeat(SYSTEM_CHARS);
 	const request = (parts: SimParts | null) => {
@@ -212,7 +245,12 @@ export function run(strategy: Strategy, scenario: Scenario, seed = 7): Result {
 		const cached = Math.floor(common / 4 / 128) * 128 * 4; // 128-token blocks
 		requests++; totalChars += length; cachedChars += Math.min(cached, length);
 		cost += (length - Math.min(cached, length)) / 4 + Math.min(cached, length) / 4 * 0.1;
-		if (requests > 1 && cached < previousLen * 0.5) bigBreaks++;
+		if (requests > 0) {
+			const missed = Math.max(0, length - Math.min(cached, length));
+			if (freshRun) boundaryChars += missed;
+			else if (cached < previousLen * 0.5) { bigBreaks++; }
+		}
+		freshRun = false;
 		previous = wire; previousLen = length;
 		return length;
 	};
@@ -241,6 +279,8 @@ export function run(strategy: Strategy, scenario: Scenario, seed = 7): Result {
 			}
 		}
 		history.push({ role: "assistant", content: `Turn ${turn} done. `.repeat(20), timestamp: time++ });
+		strategy.endRun?.();
+		freshRun = true;
 		goal.usage.tokensUsed += Math.round(lastLength / 4);
 		goal.usage.activeSeconds += 20 + Math.floor(random() * 70);
 		if (goal.status === "active" && (turn + 1) % scenario.taskEvery === 0 && finished < TASK_TITLES.length) {
@@ -256,7 +296,7 @@ export function run(strategy: Strategy, scenario: Scenario, seed = 7): Result {
 	}
 	return {
 		requests, totalTokens: Math.round(totalChars / 4), cachedTokens: Math.round(cachedChars / 4),
-		bigBreaks, cacheShare: cachedChars / totalChars, cost: Math.round(cost),
+		bigBreaks, boundaryChars: Math.round(boundaryChars / 4), cacheShare: cachedChars / totalChars, cost: Math.round(cost),
 	};
 }
 
@@ -275,7 +315,7 @@ function floorStrategy(): Strategy {
 
 export const STRATEGIES: Array<() => Strategy> = [
 	floorStrategy,
-	currentStrategy,
+	splitStrategy,
 	productionStrategy,
 	() => protoStrategy({ name: "A: counters at the end only", tasks: "ephemeral", steering: "policy", policyChange: "reset" }),
 	() => protoStrategy({ name: "B: A + steering at the end", tasks: "ephemeral", steering: "ephemeral", policyChange: "reset" }),

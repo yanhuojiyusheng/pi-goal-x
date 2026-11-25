@@ -43,7 +43,7 @@ export function compareReports(baseline, candidate) {
  if(baseline.investigation) {
   assert.deepEqual(candidate.investigation.stateChanges.map(({kind,prefixBreak})=>({kind,prefixBreak})),baseline.investigation.stateChanges.map(({kind,prefixBreak})=>({kind,prefixBreak})),'state reset classification changed');
   assert.equal(candidate.investigation.occupancy[1].breaks,0,'hidden occupancy invalidated retention');
-  assert.equal(candidate.investigation.occupancy[1].appendedCounters,0,'hidden occupancy added redundant counters');
+  assert.equal(candidate.investigation.occupancy[1].refreshedBlocks,0,'hidden occupancy rewrote the retained block');
   for(const [n,step] of candidate.investigation.stateChanges.entries()) assert.ok(step.reusableBlocks>=baseline.investigation.stateChanges[n].reusableBlocks,'unchanged workflow lost reusable history');
  }
  const differences=[];
@@ -62,9 +62,14 @@ export function compareReports(baseline, candidate) {
   const live=blk=>/\[PI GOAL|\[TASK LIST|\[This is the current goal policy|Only the latest goal policy|Goal snapshot:/.test((blk.text??JSON.stringify(blk.raw)).slice(0,120));
   const keep=r=>r.blocks.filter(blk=>!live(blk)).map(blk=>/msg_pi_\d+/.test(JSON.stringify(blk.raw))?digest(JSON.stringify(blk.raw).replace(/msg_pi_\d+/g,'msg_pi')):blk.hash);
   assert.deepEqual(keep(b),keep(a),`${b.id}: non-goal content changed`);
-  assert.ok(b.blocks.length>=a.blocks.length && b.blocks.length<=a.blocks.length+1,`${b.id}: unexpected block count`);
+  // One block replaces the split policy/counters/snapshot layout: never more
+  // live blocks than the baseline, never more than one, and never a bigger
+  // request.
+  const liveCount=r=>r.blocks.filter(live).length;
+  assert.ok(liveCount(b)<=1,`${b.id}: more than one live goal block`);
+  assert.ok(liveCount(b)<=liveCount(a),`${b.id}: live goal blocks added`);
   assert.ok(b.bytes<=a.bytes+200,`${b.id}: request got larger`);
-  differences.push({scenario:b.id,reason:'policy-counters-snapshot-split',bytes:b.bytes-a.bytes});
+  differences.push({scenario:b.id,reason:'single-request-only-goal-block',bytes:b.bytes-a.bytes,liveBlocks:liveCount(b)});
   if(a.reuse) {
    assert.ok(b.reuse && b.reuse.blocks>=a.reuse.blocks-1,`${b.id}: warm-prefix blocks lost`);
    assert.ok(b.reuse.bytes>=a.reuse.bytes-Math.max(300,a.reuse.bytes*0.05),`${b.id}: reusable history lost`);
@@ -78,20 +83,19 @@ export function investigateCache() {
  let goal=createGoal({objective:'Complete three verified tasks',autoContinue:true,sisyphus:false},0);
  goal.id='cache-investigation';
  const history=[userMessage('Begin')], retention=new LiveTailRetention();
- // Usage and notes ride at the end of each request and are never retained, so
- // the prefix a cache can reuse is everything before them (stableLength).
+ const fresh=current=>{const parts=goalPromptParts(current);return {state:parts.state,scope:`goal:${current.objective}`};};
  const stable=result=>result.messages.slice(0,result.stableLength);
- let previous=stable(retention.apply('state-workflow',history,goalPromptParts(goal)));
+ let previous=stable(retention.apply('state-workflow',history,fresh(goal)));
  const kinds=['work','set-tasks','work','complete-1','work','complete-2','work','complete-3','work','work'];
  const stateChanges=[];
  for(const [n,kind] of kinds.entries()) {
   if(kind==='set-tasks') goal={...goal,taskList:{tasks:[1,2,3].map(i=>({id:`t${i}`,title:`Required task ${i}`,status:'pending'})),blockCompletion:true,proposedAt:'1970-01-01T00:00:00Z'}};
   else if(kind.startsWith('complete')) goal={...goal,taskList:{...goal.taskList,tasks:goal.taskList.tasks.map(task=>task.id===`t${kind.at(-1)}`?{...task,status:'complete',evidence:'verified'}:task)}};
   history.push(assistantMessage(`Work ${n}`),userMessage('Continue'));
-  const next=stable(retention.apply('state-workflow',history,goalPromptParts(goal)));
+  const next=stable(retention.apply('state-workflow',history,fresh(goal)));
   let shared=0;while(shared<previous.length && JSON.stringify(previous[shared])===JSON.stringify(next[shared]))shared++;
   const prefixBreak=shared!==previous.length;
-  // Task progress lives in the snapshot block, so no step resets the prefix (#108).
+  // Task progress waits for the next run, so no step resets the prefix (#108).
   assert.equal(prefixBreak,false,`${kind}: unexplained reset`);
   stateChanges.push({kind,prefixBreak,reusableBlocks:shared,reusableBytes:Buffer.byteLength(JSON.stringify(previous.slice(0,shared))),requestBytes:Buffer.byteLength(JSON.stringify(next))});
   previous=next;
@@ -101,17 +105,18 @@ export function investigateCache() {
  for(const showContextUsage of [true,false]) {
   const retained=new LiveTailRetention();
   const base=[userMessage('Unchanged history')];
-  let prior,breaks=0,appendedCounters=0,totalRequestBytes=0;
+  const current=goalPromptParts(goal,{showContextUsage},{tokens:80,contextWindow:1000});
+  const fresh={state:current.state,scope:'goal:occupancy'};
+  let prior,breaks=0,refreshedBlocks=0,totalRequestBytes=0;
   for(let n=0;n<80;n++) {
-   const result=retained.apply('occupancy',base,goalPromptParts(goal,{showContextUsage},{tokens:n+1,contextWindow:1000}));
+   const result=retained.apply('occupancy',base,fresh);
    const kept=stable(result);
    if(prior && JSON.stringify(kept.slice(0,prior.length))!==JSON.stringify(prior))breaks++;
-   if(prior && JSON.stringify(kept)!==JSON.stringify(prior))appendedCounters++;
+   if(prior && JSON.stringify(kept)!==JSON.stringify(prior))refreshedBlocks++;
    totalRequestBytes+=Buffer.byteLength(JSON.stringify(result.messages));
    prior=kept;
   }
-  occupancy.push({showContextUsage,requests:80,breaks,appendedCounters,totalRequestBytes});
+  occupancy.push({showContextUsage,requests:80,breaks,refreshedBlocks,totalRequestBytes});
  }
- return {stateChanges,occupancy,decision:'task progress appends a snapshot; only policy changes reset'};
+ return {stateChanges,occupancy,decision:'task progress applies at the next run; only a scope change moves the block'};
 }
-

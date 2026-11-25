@@ -21,16 +21,15 @@ test("context display defaults off and explicit true preserves the existing coun
 	for (const usage of [undefined, {tokens: 0, contextWindow: 1000}, {tokens: 20, contextWindow: 1000}]) {
 		for (const maxAutonomousRuns of [undefined, 10]) for (const showAutonomousRuns of [false, true]) {
 			const enabled = goalPromptParts(goal, {showContextUsage: true, maxAutonomousRuns, showAutonomousRuns}, usage);
-			assert.match(enabled.ephemeral, /Context snapshot:/);
+			assert.match(enabled.state, /Context snapshot:/);
 			for (const value of [undefined, false]) {
 				const hidden = goalPromptParts(goal, {showContextUsage: value, maxAutonomousRuns, showAutonomousRuns}, usage);
-				assert.equal(hidden.state, enabled.state);
-				assert.equal(hidden.ephemeral, enabled.ephemeral.replace(`\n${contextUsageLine(usage)}`, ""));
-				assert.doesNotMatch(hidden.ephemeral, /Context snapshot:|\n\n/);
+				assert.equal(hidden.state, enabled.state.replace(`\n${contextUsageLine(usage)}`, ""));
+				assert.doesNotMatch(hidden.state, /Context snapshot:|\n\n\n/);
 			}
 		}
 	}
-	assert.doesNotMatch(goalPromptParts(goal).ephemeral, /Context snapshot:/);
+	assert.doesNotMatch(goalPromptParts(goal).state, /Context snapshot:/);
 });
 
 for (const mode of ["ordinary", "audit", "wait"]) test(`registered context toggles preserve the prefix and pending ${mode} state`, async () => {
@@ -60,8 +59,8 @@ for (const mode of ["ordinary", "audit", "wait"]) test(`registered context toggl
 			mutateSettingsLayer({scope: "project", cwd: h.cwd, mutation: {op: "set", path: ["showContextUsage"], value}});
 			base.push({role: "assistant", content: "work", timestamp: base.length + 1});
 			const next = await capture();
-			assert.deepEqual(next.slice(0, previous.length - 1), previous.slice(0, -1), "everything before the request-only usage line is a literal prefix");
-			assert.equal(next.at(-1).content.includes("Context snapshot:"), value);
+			assert.deepEqual(next.slice(0, previous.length), previous, "the retained block and prior history stay fixed");
+			assert.equal(JSON.stringify(next).includes("Context snapshot:"), false, "display changes apply at the next run");
 			assert.deepEqual(await capture(), next);
 			previous = next;
 		}
@@ -136,21 +135,25 @@ test("the registered settings menu edits and resets context display in both scop
 	}
 });
 
-test("changing and removing budget or run limits appends a policy block that supersedes the old limits", () => {
+test("changing and removing budget or run limits replaces the single block at its anchor", () => {
 	const goal = createGoal({ objective: "Continue work", autoContinue: true, sisyphus: false });
 	goal.tokenBudget = 100;
 	goal.usage.tokensUsed = 20;
 	const retention = new LiveTailRetention();
 	const base = [{ role: "user", content: "start" }];
-	const first = retention.apply("s", base, goalPromptParts(goal, { maxAutonomousRuns: 10 }));
+	const first = retention.apply("s", base, { ...goalPromptParts(goal, { maxAutonomousRuns: 10 }), scope: "g" });
 	delete goal.tokenBudget;
 	const parts = goalPromptParts(goal, {}, { tokens: 20, contextWindow: 1000 });
-	const out = retention.apply("s", [...base, { role: "assistant", content: "work" }], parts);
-	assert.deepEqual(out.messages.slice(0, first.stableLength), first.messages.slice(0, first.stableLength), "the earlier policy stays where it was, so the cached prefix survives");
-	const blocks = out.transientContents.filter(text => text.includes("Limits:"));
-	assert.equal(blocks.length, 2);
-	assert.match(blocks[1]!, /^\[This is the current goal policy\./);
-	assert.match(blocks[1]!, /Limits: lifetime tokens=none; runs=unlimited/);
-	assert.match(String((out.messages.at(-1) as { content: string }).content), /Only the latest goal policy block above applies/);
+	const out = retention.apply("s", [...base, { role: "assistant", content: "work" }], { ...parts, scope: "g" });
+	assert.deepEqual(out.messages.slice(0, first.stableLength), first.messages.slice(0, first.stableLength), "the block and its position stay fixed for the run");
+	assert.equal(out.transientContents.length, 1, "exactly one block, never a superseded copy");
+	// The block is refreshed at the run boundary, like every other change inside
+	// one run: the model keeps seeing the limits it started the run with.
+	assert.match(out.transientContents[0]!, /Limits: lifetime tokens=100; runs=10\./);
+	retention.clear("s");
+	const refreshed = retention.apply("s", [...base, { role: "assistant", content: "work" }], { ...parts, scope: "g" });
+	assert.equal(refreshed.transientContents.length, 1, "the new run sends one block, not a superseding pair");
+	assert.match(refreshed.transientContents[0]!, /Limits: lifetime tokens=none; runs=unlimited\./);
+	assert.doesNotMatch(refreshed.transientContents[0]!, /lifetime tokens=100/);
 	assert.match(modelBudgetLine({ tokenBudget: 1, usage: { tokensUsed: 2 } })!, /spending cap, not context capacity/);
 });

@@ -6,6 +6,7 @@ All notable changes to pi-goal-x are documented here.
 
 ### Changed
 
+- The goal state is one block again. Policy, task list and the current pointer are composed into a single request-only message, replayed verbatim at a verified history anchor for the whole run, so every request inside a run is a literal prefix extension of the one before it and nothing in history can contradict the current state. The block refreshes at the run boundary and whenever the goal's scope changes. Prompt caches see no new resets: the 1,000-transition bound still measures zero breaks, and the 24 captured fixtures are a few hundred bytes smaller on average.
 - Goal turns are faster and gentler on slow disks, with no change to prompts or behavior. Checking the history on every request no longer gets slower as a session grows (a goal turn at 2.8 MiB of history went from 32 ms to 7 ms). A turn saves the goal file once instead of twice, so file operations per turn fall from 44 to 22. Locks and goal writes skip needless folder checks. `/goal-settings`, `/goal-status` and `/goal-recovery` load when first used. Prompt-cache results are identical.
 
 ## [0.35.1] — 2026-11-24

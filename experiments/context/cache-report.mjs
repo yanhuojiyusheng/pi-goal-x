@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {ModelRuntime, convertToLlm} from '@earendil-works/pi-coding-agent';
 import {cacheGoalHistory} from '../../extensions/goal-prompt-cache.ts';
-import {LiveTailRetention, MAX_RETAINED_COUNTER_BYTES, MAX_RETAINED_LIVE_TAILS} from '../../extensions/goal-live-retention.ts';
+import {LiveTailRetention} from '../../extensions/goal-live-retention.ts';
 import {captureOne} from './capture-context.mjs';
 import {FIXTURES, userMessage, assistantMessage} from './fixtures.mjs';
 import {digest, summarize, compareReports, investigateCache} from './cache-compare.mjs';
@@ -66,25 +66,31 @@ export async function buildReport() {
     }});
    }
   }
-  // Long deterministic corpus: current bounds and reset counts, including image content.
+  // Long deterministic corpus: one block, one position, zero growth, and a
+  // bounded reset count when the run boundary moves the anchor. Image content
+  // is included so the incremental history check is exercised on big payloads.
   const retention=new LiveTailRetention();
   const history=[userMessage('bounded history'),{role:'user',timestamp:1,content:[{type:'text',text:'tool output '.repeat(4096)},{type:'image',mimeType:'image/png',data:'a'.repeat(16384)}]}];
-  let last, breaks=0;
+  let last, breaks=0, liveBlocks=0;
   for(let n=0;n<1000;n++) {
-   const fresh={state:'unchanging policy',counters:`Goal snapshot: ${n}`};
+   const fresh={state:'unchanging policy',scope:'bounded'};
    const result=retention.apply('bounded',history,fresh);
    if(last && JSON.stringify(result.messages.slice(0,last.length))!==JSON.stringify(last)) breaks++;
-   assert.ok(result.transientContents.length<=MAX_RETAINED_LIVE_TAILS,'tail bound exceeded');
-   assert.ok(result.transientContents.slice(1).reduce((s,t)=>s+Buffer.byteLength(t),0)<=MAX_RETAINED_COUNTER_BYTES,'counter byte bound exceeded');
+   assert.equal(result.transientContents.length,1,'exactly one live block per request');
+   assert.equal(result.messages.length,history.length+1,'the block never grows the request');
+   assert.equal(result.stableLength,result.messages.length,'nothing follows the block');
+   liveBlocks+=result.transientContents.length;
    assert.deepEqual(retention.apply('bounded',history,fresh),result,'retry changed at capacity');
+   if(n%40===39) retention.clear('bounded');
    last=result.messages;
   }
-  assert.ok(breaks>2 && breaks<40,'unexpected reset frequency');
+  assert.equal(breaks,0,'an unchanged history must never reset');
+  assert.equal(liveBlocks,1000,'one block per request');
   let source='archived-release';
   try {source=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();} catch { /* Gate assigns the pinned archive SHA. */ }
   const lockfile=readFileSync(path.join(root,'package-lock.json'));
   const locked=JSON.parse(lockfile);delete locked.version;delete locked.packages[''].version;
-  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,breaks},investigation:investigateCache(),rows,samples};
+  return {version:1,source,node:process.version,lockfile:digest(lockfile),dependencies:digest(locked),sdk:JSON.parse(readFileSync(path.join(root,'node_modules/@earendil-works/pi-coding-agent/package.json'),'utf8')).version,corpus:{transitions:1000,breaks,liveBlocks},investigation:investigateCache(),rows,samples};
  } finally {rmSync(work,{recursive:true,force:true});}
 }
 

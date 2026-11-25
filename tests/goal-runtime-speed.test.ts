@@ -94,10 +94,10 @@ const copy = <T>(messages: T): T => structuredClone(messages);
 test("an unchanged history, including long tool output, keeps the retained goal text", () => {
 	const retention = new LiveTailRetention();
 	const history = [message(0, "start"), message(1, "x".repeat(50_000)), message(2, "y".repeat(500))];
-	retention.apply("s", copy(history), { state: "POLICY", counters: "TASKS" });
-	const again = retention.apply("s", copy([...history, message(3, "next")]), { state: "POLICY", counters: "TASKS" });
+	retention.apply("s", copy(history), { state: "POLICY", scope: "g" });
+	const again = retention.apply("s", copy([...history, message(3, "next")]), { state: "POLICY", scope: "g" });
 	const live = again.messages.map((m: any, i: number) => (m.customType === "pi-goal-live-context" ? i : -1)).filter(i => i >= 0);
-	assert.deepEqual(live, [3, 4], "policy and tasks stay where they were added, and nothing is added twice");
+	assert.deepEqual(live, [3], "the one block stays where it was added, and nothing is added twice");
 });
 
 test("an edit anywhere earlier in the history starts the retained text over", () => {
@@ -110,12 +110,12 @@ test("an edit anywhere earlier in the history starts the retained text over", ()
 	]) {
 		const retention = new LiveTailRetention();
 		const history = [message(0, "start"), message(1, "x".repeat(50_000)), message(2, "y".repeat(500)), message(3, "last")];
-		retention.apply("s", copy(history), { state: "POLICY", counters: "TASKS" });
+		retention.apply("s", copy(history), { state: "POLICY", scope: "g" });
 		const edited = copy(history);
 		edit(edited);
-		const next = retention.apply("s", edited, { state: "POLICY", counters: "TASKS" });
+		const next = retention.apply("s", edited, { state: "POLICY", scope: "g" });
 		const live = next.messages.map((m: any, i: number) => (m.customType === "pi-goal-live-context" ? i : -1)).filter(i => i >= 0);
-		assert.deepEqual(live, [edited.length, edited.length + 1], "the retained text moved to the end of the edited history");
+		assert.deepEqual(live, [edited.length], "the retained block moved to the end of the edited history, replacing the old copy");
 	}
 });
 
@@ -126,8 +126,8 @@ test("a message that cannot be compared never counts as unchanged", () => {
 	const odd = { role: "user", content: new Map([["a", 1]]), timestamp: 2 };
 	for (const bad of [cyclic, odd]) {
 		retention.clear("s");
-		retention.apply("s", [bad], { state: "POLICY" });
-		const next = retention.apply("s", [bad, message(3, "later")], { state: "POLICY" });
+		retention.apply("s", [bad], { state: "POLICY", scope: "g" });
+		const next = retention.apply("s", [bad, message(3, "later")], { state: "POLICY", scope: "g" });
 		const live = next.messages.filter((m: any) => m.customType === "pi-goal-live-context");
 		assert.equal(live.length, 1, "no stale copy is left behind");
 	}
@@ -136,10 +136,10 @@ test("a message that cannot be compared never counts as unchanged", () => {
 test("checking a long history stays cheap", () => {
 	const retention = new LiveTailRetention();
 	const history = Array.from({ length: 1500 }, (_, i) => message(i, `turn ${i} ${"result text ".repeat(i % 3 === 0 ? 400 : 20)}`));
-	retention.apply("s", copy(history), { state: "POLICY" });
+	retention.apply("s", copy(history), { state: "POLICY", scope: "g" });
 	const requests = Array.from({ length: 20 }, () => copy(history));
 	const started = performance.now();
-	for (const request of requests) retention.apply("s", request, { state: "POLICY" });
+	for (const request of requests) retention.apply("s", request, { state: "POLICY", scope: "g" });
 	const perRequest = (performance.now() - started) / requests.length;
 	// About 1 ms on a laptop for 1,500 messages and 2 MB. Hashing every message
 	// took about 6 ms. The bound is loose so a slow runner does not fail it.

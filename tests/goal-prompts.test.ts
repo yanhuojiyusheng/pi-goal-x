@@ -453,12 +453,12 @@ test("allowance configuration refreshes cached guidance without bloating disable
 	assert.match(zero, /0\/0 \(automatic continuation disabled\)/);
 });
 
-test("a task update changes only the snapshot block, not the policy block (#108)", () => {
+test("a task update changes only the task section of the one block (#108)", () => {
 	const tasks = [{ id: "a", title: "First", status: "pending" as const }, { id: "b", title: "Second", status: "pending" as const }];
 	const before = goal({ taskList: { tasks, blockCompletion: true, proposedAt: "2026-01-01T00:00:00Z" } });
 	const after = { ...before, currentTaskId: "b", taskList: { ...before.taskList!, tasks: [{ ...tasks[0]!, status: "complete" as const }, tasks[1]!] } };
 	const a = goalPromptParts(before), b = goalPromptParts(after);
-	assert.equal(b.state, a.state, "the policy block is unchanged, so the cached prefix survives");
-	assert.notEqual(b.counters, a.counters);
-	assert.match(b.counters, /TASK LIST — 1\/2 tasks complete/);
+	assert.equal(b.state.slice(0, a.state.indexOf("[TASK LIST")), a.state.slice(0, a.state.indexOf("[TASK LIST")), "the policy text before the task list is unchanged");
+	assert.notEqual(b.state, a.state, "the task list itself changed");
+	assert.match(b.state, /TASK LIST — 1\/2 tasks complete/);
 });

@@ -227,28 +227,55 @@ function retainedTaskChars(task: GoalTask): number {
 }
 
 /**
- * The goal state for one request, split by how often each part changes:
- * - state: rules, objective, contract, limits. Changes only when the goal does.
- * - counters: the task list. Changes when a task starts or finishes.
- * - ephemeral: scheduling instructions, usage and run counts. Changes every
- *   turn, so it is sent with each request and never kept in history. The
- *   scheduling instructions are cleared by omission, which is safe because
- *   nothing stale is left behind.
+ * The goal state for one request, as one block.
+ *
+ * The block holds everything the model needs about the goal, so a request never
+ * carries two messages that could disagree: rules, objective, contract, limits,
+ * the task list and the next step are one string at one position. The retention
+ * layer pins it there for the run and measures what that costs.
+ *
+ * Scheduling instructions are part of the block rather than a request-only
+ * suffix. They are cleared by omission, so a copy that outlives the decision
+ * would keep issuing a cancelled order; they change rarely, and a change
+ * re-anchors the block once instead of trailing it on every request.
  */
-export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string; counters: string; ephemeral: string } {
+export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): { state: string } {
 	const fixed = cachedPrompt(goal, settings, "goal", () => buildGoalPrompt(goal, settings));
-	const { runs, instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
+	const { instructions } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
 	const limits = `Limits: lifetime tokens=${goal.tokenBudget ?? "none"}; runs=${settings?.maxAutonomousRuns ?? "unlimited"}.`;
-	const state = [fixed, limits, "Usage spans goal turns, not context. The latest snapshot, including its task list, supersedes earlier ones."].join("\n");
-	const context = settings?.showContextUsage === true ? `\n${contextUsageLine(contextUsage)}` : "";
-	const counters = taskListBlock(goal, settings);
-	const ephemeral = [instructions, `Goal snapshot: ${formatUsage(goal)}${context}\n${runs}`].filter(Boolean).join("\n");
-	return { state, counters, ephemeral };
+	return { state: [fixed, instructions, limits, nextStepBlock(goal, settings, contextUsage)].filter(Boolean).join("\n") };
+}
+
+/**
+ * The step the model should take now, from the persisted focus: which task is
+ * current, which comes first when none is, and the cumulative usage and run
+ * counts. Kept inside the block so the answer to "what now" is never stale in
+ * the history.
+ */
+function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?: GoalContextUsage): string {
+	const index = settings?.disableTasks || !goal.taskList?.tasks.length ? undefined : taskIndex(goal.taskList.tasks);
+	const current = goal.currentTaskId ? index?.byId.get(goal.currentTaskId) : undefined;
+	const lines: string[] = [];
+	if (index && current?.status !== "pending") {
+		const next = index.pending[0];
+		lines.push("Now: no task is marked current.");
+		if (next) {
+			// Ids are never excerpted: a truncated id cannot be passed back to
+			// update_goal_task.
+			lines.push(`Start with the first pending task: ${next.id} · ${excerpt(next.title, 180, "tasks")}`);
+			lines.push(`Mark it current with update_goal_task({task_id:"${next.id}", status:"start"}).`);
+		}
+	} else if (!index) {
+		lines.push("Now: keep advancing the objective above.");
+		lines.push("When it is actually met, call update_goal({status:\"complete\"}) to request an independent audit.");
+	}
+	const { runs } = schedulerSummaryParts(goal.scheduler, settings?.maxAutonomousRuns, settings?.showAutonomousRuns, settings?.idleContinuationBackoff === true, settings?.commands);
+	lines.push(`Goal snapshot: ${formatUsage(goal)}${settings?.showContextUsage === true ? `\n${contextUsageLine(contextUsage)}` : ""}\n${runs}`);
+	return lines.filter(Boolean).join("\n");
 }
 
 export function goalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
-	const { state, counters, ephemeral } = goalPromptParts(goal, settings);
-	return [state, counters, ephemeral].filter(Boolean).join("\n");
+	return goalPromptParts(goal, settings).state;
 }
 
 function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
@@ -258,7 +285,7 @@ function buildGoalPrompt(goal: GoalRecord, settings?: GoalSettings): string {
 		`[PI GOAL ACTIVE goalId=${goal.id}]`,
 		lifecyclePolicyBlock(settings?.maxAutonomousRuns !== 0, settings?.strictExecutionContract === true || !!goal.scheduler?.wait, settings?.commands), sisyphusDisciplineBlock(goal),
 		`Status: ${statusLabel(goal)}\nMode: ${goal.sisyphus ? "sisyphus" : "regular"}`,
-		untrustedObjectiveBlock(goal), verificationContractBlock(goal, settings),
+		untrustedObjectiveBlock(goal), taskListBlock(goal, settings), verificationContractBlock(goal, settings),
 		].filter(Boolean).join("\n\n");
 }
 

@@ -1,275 +1,244 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LiveTailRetention, MAX_RETAINED_COUNTER_BYTES, MAX_RETAINED_LIVE_TAILS, MAX_RETAINED_POLICY_BLOCKS, POLICY_RECENCY_NOTE, POLICY_SUPERSEDED_NOTE } from "../extensions/goal-live-retention.ts";
+import { LiveTailRetention, MAX_TRACKED_SESSIONS } from "../extensions/goal-live-retention.ts";
 
 const msg = (role: string, content: string, timestamp: number): any => ({ role, content, timestamp });
 const contents = (messages: any[]): string[] => messages.map(message => message.content);
+const live = (messages: any[]): string[] => messages.filter(m => m.customType === "pi-goal-live-context").map(m => m.content);
 
-test("retained tails make each request a literal prefix of the next", () => {
+test("a run retains the initial block and its position until the run ends", () => {
 	const retention = new LiveTailRetention();
-	const base1 = [msg("user", "h", 1)];
-	const first = retention.apply("s", base1, { state: "S", counters: "V1" });
-	assert.deepEqual(contents(first.messages), ["h", "S", "V1"]);
-	const base2 = [...base1, msg("assistant", "a", 2)];
-	const second = retention.apply("s", base2, { state: "S", counters: "V2" });
-	assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages);
-	assert.deepEqual(contents(second.messages), ["h", "S", "V1", "a", "V2"]);
+	const first = [msg("user", "start", 1)];
+	assert.deepEqual(contents(retention.apply("s", first, { state: "B1", scope: "g" }).messages), ["start", "B1"]);
+	const next = [...first, msg("assistant", "work", 2), msg("toolResult", "result", 3)];
+	assert.deepEqual(contents(retention.apply("s", next, { state: "B2", scope: "g" }).messages), ["start", "B1", "work", "result"]);
 });
 
-test("unchanged content across repeats and advances adds zero blocks", () => {
+test("the block remains at its initial position during a run", () => {
+	const retention = new LiveTailRetention();
+	const base1 = [msg("user", "h", 1)];
+	assert.deepEqual(contents(retention.apply("s", base1, { state: "B1", scope: "g" }).messages), ["h", "B1"]);
+	const base2 = [...base1, msg("assistant", "a", 2)];
+	assert.deepEqual(contents(retention.apply("s", base2, { state: "B2", scope: "g" }).messages), ["h", "B1", "a"]);
+	const base3 = [...base2, msg("assistant", "b", 3)];
+	assert.deepEqual(contents(retention.apply("s", base3, { state: "B3", scope: "g" }).messages), ["h", "B1", "a", "b"]);
+});
+
+test("only one copy of the block is ever retained", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
-	const fresh = { state: "S", counters: "V" };
+	let out: any[] = [];
+	for (let i = 0; i < 10; i++) {
+		base.push(msg("assistant", `a${i}`, i + 2));
+		out = retention.apply("s", base, { state: `B${i}`, scope: "g" }).messages;
+	}
+	assert.equal(live(out).length, 1, "stale copies are dropped, never accumulated");
+	assert.equal(live(out)[0], "B0", "the first block remains unchanged");
+	assert.deepEqual(retention.contents("s"), ["B0"]);
+});
+
+test("the same request always renders the same messages", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	const fresh = { state: "B", scope: "g" };
 	const first = retention.apply("s", base, fresh);
-	const repeat = retention.apply("s", base, fresh);
-	assert.deepEqual(repeat.messages, first.messages);
+	assert.deepEqual(retention.apply("s", base, fresh).messages, first.messages, "an identical retry must stay byte-identical");
 	const advanced = [...base, msg("assistant", "a", 2)];
-	const third = retention.apply("s", advanced, fresh);
-	assert.deepEqual(third.messages.slice(0, first.messages.length), first.messages);
-	assert.equal(third.messages.length, first.messages.length + 1);
+	assert.deepEqual(contents(retention.apply("s", advanced, fresh).messages), ["h", "B", "a"], "the original anchor stays fixed");
 });
 
 test("rewritten history resets once and never loses the live state", () => {
 	const retention = new LiveTailRetention();
-	retention.apply("s", [msg("user", "h", 1)], { state: "S", counters: "V1" });
-	const compacted = [msg("user", "compacted summary", 10)];
-	const next = retention.apply("s", compacted, { state: "S", counters: "V1" });
-	assert.deepEqual(contents(next.messages), ["compacted summary", "S", "V1"]);
+	retention.apply("s", [msg("user", "h", 1)], { state: "B1", scope: "g" });
+	const next = retention.apply("s", [msg("user", "compacted summary", 10)], { state: "B1", scope: "g" });
+	assert.deepEqual(contents(next.messages), ["compacted summary", "B1"]);
 });
 
-test("a changed policy block is appended and supersedes the earlier one without breaking the prefix", () => {
+test("a changed block waits for the next run", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
-	const first = retention.apply("s", base, { state: "S1", counters: "V1" });
-	const next = retention.apply("s", base, { state: "S2", counters: "V1" });
-	assert.deepEqual(next.messages.slice(0, first.messages.length), first.messages, "the earlier request is still a literal prefix");
-	assert.deepEqual(contents(next.messages), ["h", "S1", "V1", `${POLICY_SUPERSEDED_NOTE}\nS2`, POLICY_RECENCY_NOTE]);
-	assert.equal(next.stableLength, 4, "the recency note is request-only and sits after the stable prefix");
+	retention.apply("s", base, { state: "B1", scope: "g" });
+	assert.deepEqual(contents(retention.apply("s", base, { state: "B2", scope: "g" }).messages), ["h", "B1"]);
 });
 
-test("pausing and resuming keeps the prefix and does not resend an unchanged task list", () => {
+test("the block stays anchored for a thousand changing requests", () => {
 	const retention = new LiveTailRetention();
-	const base = [msg("user", "h", 1)];
-	const active = retention.apply("s", base, { state: "ACTIVE", counters: "TASKS", ephemeral: "usage 1", scope: "g" });
-	base.push(msg("assistant", "a", 2));
-	const paused = retention.apply("s", base, { state: "PAUSED", ephemeral: undefined, scope: "g" });
-	base.push(msg("user", "resume", 3));
-	const resumed = retention.apply("s", base, { state: "ACTIVE", counters: "TASKS", ephemeral: "usage 2", scope: "g" });
-	assert.deepEqual(paused.messages.slice(0, active.stableLength), active.messages.slice(0, active.stableLength));
-	assert.deepEqual(resumed.messages.slice(0, paused.stableLength), paused.messages.slice(0, paused.stableLength));
-	assert.equal(resumed.messages.filter((m: any) => m.content === "TASKS").length, 1, "the unchanged task list is not repeated");
-	assert.equal(contents(resumed.messages).at(-1), `${POLICY_RECENCY_NOTE}\nusage 2`);
+	const base: unknown[] = [{ role: "user", content: "start" }];
+	for (let i = 0; i < 1000; i++) {
+		base.push({ role: "assistant", content: `turn ${i}` });
+		const out = retention.apply("s", base, { state: `B${i}: ${"x".repeat(180)}`, scope: "g" });
+		assert.equal(live(out.messages as any[]).length, 1, "exactly one block per request");
+		assert.equal(live(out.messages as any[])[0], `B0: ${"x".repeat(180)}`);
+		assert.equal((out.messages as any[]).length, base.length + 1, "the block never displaces history");
+	}
 });
 
-test("request-only text is sent every time, never retained, and still counts as transient for the cache marker", () => {
+test("a new run re-anchors: the block moves to the tail with the current state", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
-	const first = retention.apply("s", base, { state: "S", ephemeral: "usage 1" });
-	assert.deepEqual(contents(first.messages), ["h", "S", "usage 1"]);
-	assert.deepEqual(retention.contents("s"), ["S", "usage 1"]);
-	base.push(msg("assistant", "a", 2));
-	const second = retention.apply("s", base, { state: "S", ephemeral: "usage 2" });
-	assert.deepEqual(contents(second.messages), ["h", "S", "a", "usage 2"], "the old usage line is gone, not left mid-history");
-	assert.equal(second.stableLength, 3);
-	assert.deepEqual(second.transientContents, ["S", "usage 2"]);
-	const repeat = retention.apply("s", base, { state: "S", ephemeral: "usage 2" });
-	assert.deepEqual(repeat.messages, second.messages);
+	retention.apply("s", base, { state: "B1", scope: "g" });
+	const advanced = [...base, msg("assistant", "a", 2)];
+	retention.clear("s");
+	const out = retention.apply("s", advanced, { state: "B2", scope: "g" });
+	assert.deepEqual(contents(out.messages), ["h", "a", "B2"], "the refresh lands at the tail, nothing stale stays behind");
+	assert.deepEqual(retention.contents("s"), ["B2"]);
 });
 
-test("a different goal or a changed objective starts a fresh prefix", () => {
+test("every request inside one run is a literal prefix of the next", () => {
 	const retention = new LiveTailRetention();
-	const base = [msg("user", "h", 1)];
-	retention.apply("s", base, { state: "S1", counters: "V1", scope: "goal-a:1" });
-	const edited = retention.apply("s", base, { state: "S2", counters: "V1", scope: "goal-a:2" });
-	assert.deepEqual(contents(edited.messages), ["h", "S2", "V1"]);
-});
-
-test("policy blocks are bounded: past the limit one reset removes the superseded ones", () => {
-	const retention = new LiveTailRetention();
-	const base = [msg("user", "h", 1)];
-	let resets = 0;
+	const base: any[] = [msg("user", "h", 1)];
 	let previous: any[] = [];
-	for (let i = 0; i < MAX_RETAINED_POLICY_BLOCKS + 3; i++) {
-		const out = retention.apply("s", base, { state: `S${i}` });
-		if (previous.length > 0 && JSON.stringify(out.messages.slice(0, previous.length)) !== JSON.stringify(previous)) resets++;
-		previous = out.messages.slice(0, out.stableLength);
-	}
-	assert.equal(resets, 1);
-	assert.ok(retention.contents("s")!.filter(text => text.includes("S")).length <= MAX_RETAINED_POLICY_BLOCKS);
-});
-
-test("a task list that disappears under the same policy is not replayed", () => {
-	const retention = new LiveTailRetention();
-	const base = [msg("user", "h", 1)];
-	retention.apply("s", base, { state: "S", counters: "TASKS" });
-	assert.deepEqual(contents(retention.apply("s", base, { state: "S" }).messages), ["h", "S"]);
-});
-
-test("retained growth is bounded with one amortized reset per window", () => {
-	const retention = new LiveTailRetention();
-	const base = [msg("user", "h", 1)];
-	let previous: any[] | null = null;
-	let breaks = 0;
-	for (let i = 0; i < MAX_RETAINED_LIVE_TAILS + 8; i++) {
-		const out = retention.apply("s", base, { state: "S", counters: `V${i}` });
-		if (previous !== null && JSON.stringify(out.messages.slice(0, previous.length)) !== JSON.stringify(previous)) breaks++;
+	for (let i = 0; i < 20; i++) {
+		const out = retention.apply("s", base, { state: "B0", scope: "g" });
+		if (i > 0) assert.deepEqual(out.messages.slice(0, previous.length), previous, "the prefix is byte-identical");
 		previous = out.messages;
-		assert.ok(out.messages.length <= base.length + MAX_RETAINED_LIVE_TAILS, "wire overhead stays within the retention window");
+		base.push(msg("assistant", `a${i}`, i + 2));
 	}
-	assert.equal(breaks, 1);
+	// The last apply ran before the final push, so its request had one message
+	// fewer than the history holds now, plus the block itself.
+	assert.equal(previous.length, base.length);
+});
+
+test("a focused task that completes is dropped so the next run re-anchors", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	retention.apply("s", base, { state: "B1", taskId: "t2", scope: "g" });
+	assert.equal(retention.taskId("s"), "t2");
+	// goal-events clears the session when the retained task is complete, so the
+	// refreshed block lands at the tail instead of keeping a stale task header.
+	retention.clear("s");
+	const next = [...base, msg("assistant", "a", 2)];
+	const out = retention.apply("s", next, { state: "B2", taskId: "t3", scope: "g" });
+	assert.deepEqual(contents(out.messages), ["h", "a", "B2"]);
+	assert.equal(retention.taskId("s"), "t3");
+	assert.equal(out.transientContents[0]!.startsWith("B2"), true);
 });
 
 test("sessions are tracked independently", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
-	retention.apply("a", base, { state: "SA", counters: "VA" });
-	const other = retention.apply("b", base, { state: "SB", counters: "VB" });
-	assert.deepEqual(contents(other.messages), ["h", "SB", "VB"]);
-	const again = retention.apply("a", base, { state: "SA", counters: "VA" });
-	assert.deepEqual(contents(again.messages), ["h", "SA", "VA"]);
+	retention.apply("a", base, { state: "BA", scope: "g" });
+	assert.deepEqual(contents(retention.apply("b", base, { state: "BB", scope: "g" }).messages), ["h", "BB"]);
+	assert.deepEqual(contents(retention.apply("a", base, { state: "BA", scope: "g" }).messages), ["h", "BA"]);
 });
 
 test("null fresh clears the session so the next request starts over", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
-	retention.apply("s", base, { state: "S", counters: "V" });
+	retention.apply("s", base, { state: "B", scope: "g" });
 	const cleared = retention.apply("s", base, null);
 	assert.deepEqual(cleared.messages, base);
 	assert.deepEqual(cleared.transientContents, []);
 	const advanced = [...base, msg("assistant", "a", 2)];
-	const next = retention.apply("s", advanced, { state: "S", counters: "V" });
-	assert.deepEqual(contents(next.messages), ["h", "a", "S", "V"]);
+	assert.deepEqual(contents(retention.apply("s", advanced, { state: "B", scope: "g" }).messages), ["h", "a", "B"]);
 });
 
-test("transient contents cover retained and fresh tails for marker relocation", () => {
+test("transient contents cover the retained block for marker relocation", () => {
 	const retention = new LiveTailRetention();
 	const base = [msg("user", "h", 1)];
-	retention.apply("s", base, { state: "S", counters: "V1" });
+	retention.apply("s", base, { state: "B1", scope: "g" });
 	const advanced = [...base, msg("assistant", "a", 2)];
-	const next = retention.apply("s", advanced, { state: "S", counters: "V2" });
-	assert.deepEqual(next.transientContents, ["S", "V1", "V2"]);
+	assert.deepEqual(retention.apply("s", advanced, { state: "B2", scope: "g" }).transientContents, ["B1"]);
 });
 
-test("a retained tail never splits a tool-call batch when history diverges", () => {
+test("a retained block never splits a tool-call batch when history diverges", () => {
 	const retention = new LiveTailRetention();
 	const user = msg("user", "Inspect", 1);
 	const call = (ids: string[]): any => ({ role: "assistant", timestamp: 2, content: ids.map(id => ({ type: "toolCall", id, name: "read", arguments: { path: id } })) });
 	const result = (id: string): any => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "OK" }], timestamp: 3, isError: false });
-	const fresh = { state: "S", counters: "V" };
+	const fresh = { state: "B", scope: "g" };
 	retention.apply("s", [user, call(["a"]), result("a")], fresh);
-	// A different branch with the same shape must not inherit the old anchor.
 	const out = retention.apply("s", [user, call(["b", "c"]), result("b"), result("c")], fresh).messages;
 	const roles = out.map((m: any) => m.role);
 	const firstResult = roles.indexOf("toolResult");
 	assert.deepEqual(roles.slice(firstResult, firstResult + 2), ["toolResult", "toolResult"], "tool results stay adjacent");
-	assert.deepEqual(roles.slice(-2), ["custom", "custom"], "live state rides at the tail");
-});
-
-test("an unchanged request near capacity keeps its prefix instead of resetting", () => {
-	const retention = new LiveTailRetention();
-	const base = [msg("user", "h", 1)];
-	let previous: any[] = [];
-	for (let i = 0; i < MAX_RETAINED_LIVE_TAILS - 2; i++) previous = retention.apply("s", base, { state: "S", counters: `V${i}` }).messages;
-	const repeat = retention.apply("s", base, { state: "S", counters: `V${MAX_RETAINED_LIVE_TAILS - 3}` }).messages;
-	assert.deepEqual(repeat, previous, "a zero-growth request appends nothing and drops nothing");
+	assert.deepEqual(roles.slice(-1), ["custom"], "the live block rides at the tail");
 });
 
 for (const editInPlace of [false, true]) {
-	test(`a middle-history ${editInPlace ? "in-place edit" : "replacement"} drops previously retained counters`, () => {
+	test(`a middle-history ${editInPlace ? "in-place edit" : "replacement"} drops the retained block`, () => {
 		const retention = new LiveTailRetention();
 		const early = { role: "user", content: [{ type: "text", text: "early" }], timestamp: 1 };
 		const base = [early, msg("user", "late", 2)];
-		retention.apply("s", base, { state: "S", counters: "V1" });
+		retention.apply("s", base, { state: "B1", scope: "g" });
 		base.push(msg("assistant", "reply", 3));
-		retention.apply("s", base, { state: "S", counters: "V2" });
-		// Keep both anchor messages identical. Only earlier history changes.
+		retention.apply("s", base, { state: "B2", scope: "g" });
 		if (editInPlace) early.content[0]!.text = "edited";
 		else base[0] = { ...early, content: [{ type: "text", text: "edited" }] };
-		const next = retention.apply("s", base, { state: "S", counters: "V3" });
-		assert.deepEqual(next.messages.slice(0, base.length), base, "no old tail remains between history messages");
-		assert.deepEqual(contents(next.messages.slice(base.length)), ["S", "V3"]);
-		assert.deepEqual(next.transientContents, ["S", "V3"], "old counters are gone, not merely replayed at the same anchor");
-		assert.deepEqual(retention.apply("s", base, { state: "S", counters: "V3" }).messages, next.messages, "an unchanged retry does not reset or append");
+		const next = retention.apply("s", base, { state: "B3", scope: "g" });
+		assert.deepEqual(contents(next.messages.slice(0, base.length)), base.map(m => m.content), "no old block remains between history messages");
+		assert.deepEqual(contents(next.messages.slice(base.length)), ["B3"]);
 	});
 }
 
-for (const resultShape of ["toolResult", "tool", "tool_result"] as const) {
-	test(`a retained tail never splits an extended result batch (${resultShape})`, () => {
-		const retention = new LiveTailRetention();
-		const call = { role: "assistant", timestamp: 2, content: ["a", "b"].map(id => ({ type: "toolCall", id, name: "read", arguments: {} })) };
-		const result = (id: string) => ({ role: "toolResult", toolCallId: id, toolName: "read", timestamp: 3, content: [{ type: "text", text: "OK" }], isError: false });
-		const base = [msg("user", "Inspect", 1), call, result("a")];
-		retention.apply("s", base, { state: "S", counters: "V1" });
-		// No prior message changes: only the insertion-point guard can stop a
-		// replay between these results when a filtered batch is extended.
-		const extra = resultShape === "tool_result"
-			? { role: "user", content: [{ type: "tool_result", tool_use_id: "b", content: "OK" }], timestamp: 4 }
-			: { ...result("b"), role: resultShape };
-		const advanced = [...base, extra];
-		const next = retention.apply("s", advanced, { state: "S", counters: "V2" });
-		assert.deepEqual(next.messages.slice(0, advanced.length), advanced, "the result batch stays contiguous");
-		assert.deepEqual(contents(next.messages.slice(advanced.length)), ["S", "V2"]);
-		assert.deepEqual(next.transientContents, ["S", "V2"]);
-	});
-}
-
-test("tails anchored on empty history reset once real history arrives", () => {
+test("a block anchored on empty history resets once real history arrives", () => {
 	const retention = new LiveTailRetention();
-	const fresh = { state: "S", counters: "V" };
-	const first = retention.apply("s", [], fresh).messages;
-	assert.deepEqual(contents(first), ["S", "V"]);
-	const out = retention.apply("s", [msg("user", "h", 1)], fresh).messages;
-	assert.deepEqual(contents(out), ["h", "S", "V"], "fresh tails anchor at the tail, nothing lingers at the head");
+	retention.apply("s", [], { state: "B1", scope: "g" });
+	const out = retention.apply("s", [msg("user", "real", 1)], { state: "B1", scope: "g" });
+	assert.deepEqual(contents(out.messages), ["real", "B1"], "nothing lingers at the head");
+});
+
+test("a different goal or a changed objective starts a fresh prefix", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	retention.apply("s", base, { state: "B1", scope: "goal-a:1" });
+	const edited = retention.apply("s", base, { state: "B2", scope: "goal-a:2" });
+	assert.deepEqual(contents(edited.messages), ["h", "B2"], "a changed objective is shown at once, not one run late");
+});
+
+test("a paused or blocked state replaces the active block immediately", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	retention.apply("s", base, { state: "ACTIVE", scope: "g:1" });
+	const paused = retention.apply("s", base, { state: "PAUSED", scope: "paused:g:1" });
+	assert.deepEqual(contents(paused.messages), ["h", "PAUSED"], "a lifecycle change is visible at once");
+	const resumed = retention.apply("s", base, { state: "ACTIVE", scope: "g:1" });
+	assert.deepEqual(contents(resumed.messages), ["h", "ACTIVE"]);
+});
+
+test("a one-shot note re-anchors so the model sees it now", () => {
+	const retention = new LiveTailRetention();
+	const base = [msg("user", "h", 1)];
+	retention.apply("s", base, { state: "B1", scope: "g" });
+	const advanced = [...base, msg("assistant", "a", 2)];
+	const flagged = retention.apply("s", advanced, { state: "B1\n[GOAL STALLED]", scope: "g", reanchor: true });
+	assert.deepEqual(contents(flagged.messages), ["h", "a", "B1\n[GOAL STALLED]"]);
+	const after = [...advanced, msg("assistant", "b", 3)];
+	const settled = retention.apply("s", after, { state: "B2", scope: "g" });
+	assert.deepEqual(contents(settled.messages), ["h", "a", "B1\n[GOAL STALLED]", "b"], "the note stays pinned where it landed for the rest of the run");
+});
+
+test("large payloads are hashed rather than copied, and an edit is still noticed", () => {
+	const retention = new LiveTailRetention();
+	const image = { type: "image", data: "A".repeat(1024 * 1024), mimeType: "image/png" };
+	const base: any[] = [{ role: "user", content: [image] }, { role: "toolResult", toolCallId: "a", content: [{ type: "text", text: "x".repeat(1024 * 1024) }] }];
+	retention.apply("s", base, { state: "B1", scope: "g" });
+	image.data = "B" + image.data.slice(1);
+	const out = retention.apply("s", base, { state: "B2", scope: "g" });
+	assert.deepEqual(out.messages.slice(0, base.length), base);
+	assert.deepEqual(contents(out.messages.slice(base.length)), ["B2"], "the edited image invalidates the anchor");
+});
+
+test("an unreadable message never matches, so the block cannot sit on stale history", () => {
+	const retention = new LiveTailRetention();
+	const circular: any = { role: "user", content: "h", timestamp: 1 };
+	circular.self = circular;
+	retention.apply("s", [circular], { state: "B1", scope: "g" });
+	const out = retention.apply("s", [circular], { state: "B2", scope: "g" });
+	assert.deepEqual(contents(out.messages), ["h", "B2"], "an uncopyable message resets rather than assumes equality");
 });
 
 test("eviction bounds provider metadata as well as retention", () => {
 	const retention = new LiveTailRetention();
-	for (let i = 0; i < 100; i++) retention.apply(`s${i}`, [{ role: "user", content: "start" }], { state: "S", counters: "1" });
+	for (let i = 0; i < MAX_TRACKED_SESSIONS + 20; i++) retention.apply(`s${i}`, [{ role: "user", content: "start" }], { state: "B", scope: "g" });
 	assert.equal(retention.contents("s0"), undefined);
-	assert.deepEqual(retention.contents("s99"), ["S", "1"]);
+	assert.deepEqual(retention.contents(`s${MAX_TRACKED_SESSIONS + 19}`), ["B"]);
 });
 
-test("a thousand changing requests bound retained counter bytes", () => {
+test("the retained block stays the last message, so the whole request is reusable prefix", () => {
 	const retention = new LiveTailRetention();
-	const base: unknown[] = [{ role: "user", content: "start" }];
-	for (let i = 0; i < 1000; i++) {
-		base.push({ role: "assistant", content: `turn ${i}` });
-		const out = retention.apply("s", base, { state: "S", counters: `Snapshot ${i}: ${"x".repeat(180)}` });
-		assert.ok(out.transientContents.filter(s => s !== "S").reduce((n, s) => n + Buffer.byteLength(s), 0) <= MAX_RETAINED_COUNTER_BYTES);
-		assert.equal((out.messages.at(-1) as { content: string }).content, `Snapshot ${i}: ${"x".repeat(180)}`);
-	}
-});
-
-
-test("a delayed result resets earlier policy as well as the unsafe counter anchor", () => {
-	const retention = new LiveTailRetention();
-	const base: any[] = [msg("user", "inspect", 1)];
-	retention.apply("s", base, {state: "S", counters: "V1"});
-	base.push({role: "assistant", content: [{type: "toolCall", id: "a", name: "read", arguments: {}}]});
-	retention.apply("s", base, {state: "S", counters: "V2"});
-	base.push({role: "toolResult", toolCallId: "a", content: [{type: "text", text: "failed"}], isError: true});
-	const out = retention.apply("s", base, {state: "S", counters: "V3"});
-	assert.deepEqual(out.messages.slice(0, base.length), base);
-	assert.deepEqual(contents(out.messages.slice(base.length)), ["S", "V3"]);
-	assert.deepEqual(retention.contents("s"), ["S", "V3"]);
-});
-
-test("removing optional observations does not replay their old values", () => {
-	const retention = new LiveTailRetention();
-	const base = [msg("user", "inspect", 1)];
-	retention.apply("s", base, {state: "S", counters: "obsolete occupancy"});
-	const out = retention.apply("s", base, {state: "S"});
-	assert.deepEqual(contents(out.messages), ["inspect", "S"]);
-});
-
-test("image and large tool-output edits invalidate hashes without changing stored history", () => {
-	const retention = new LiveTailRetention();
-	const image = {type: "image", data: "A".repeat(1024 * 1024), mimeType: "image/png"};
-	const base: any[] = [{role: "user", content: [image]}, {role: "toolResult", toolCallId: "a", content: [{type: "text", text: "x".repeat(1024 * 1024)}]}];
-	retention.apply("s", base, {state: "S", counters: "old"});
-	image.data = "B" + image.data.slice(1);
-	const out = retention.apply("s", base, {state: "S", counters: "new"});
-	assert.deepEqual(out.messages.slice(0, base.length), base);
-	assert.deepEqual(contents(out.messages.slice(base.length)), ["S", "new"]);
-	assert.equal(base.length, 2);
+	const base = [msg("user", "h", 1), msg("assistant", "a", 2)];
+	const out = retention.apply("s", base, { state: "B", scope: "g" });
+	assert.equal(out.messages.length, out.stableLength, "nothing follows the block");
+	assert.equal((out.messages.at(-1) as any).customType, "pi-goal-live-context");
 });

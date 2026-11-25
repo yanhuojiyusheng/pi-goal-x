@@ -27,6 +27,7 @@ import { invalidateGoalPoolCache } from "./storage/goal-files.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
 import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";
 import { LiveTailRetention } from "./goal-live-retention.ts";
+import { taskIndex } from "./goal-task-index.ts";
 import { goalContextParts } from "./goal-context-parts.ts";
 import { hasActiveDraft, rehydrateDraft } from "./goal-drafting.ts";
 import { syncTerminalInputPause } from "./goal-terminal-input.ts";
@@ -211,10 +212,16 @@ export function registerGoalEvents(core: GoalEventsCore): void {
 		if (sessionKey === "unidentified") liveRetention.clear(sessionKey);
 		const parts = goalContextParts(core, ctx);
 		if (parts) {
-			// Retain previously sent tails verbatim at their anchors so this
-			// request extends the previous one instead of displacing its tail.
-			// Only genuinely new policy and task-list content is appended; usage
-			// and notes ride at the end of this request only.
+			// Keep the block at the position it was first sent, so every later
+			// request of this run is a literal extension of the earlier one and the
+			// provider can reuse the whole cached prefix. The block is refreshed
+			// when the run ends, when its scope changes, and when it has to carry a
+			// one-shot note; a task that just finished also forces the refresh so
+			// the header cannot advertise work that is already done.
+			const retainedTaskId = liveRetention.taskId(sessionKey);
+			if (retainedTaskId !== undefined && core.state.goal?.status === "active" && taskIndex(core.state.goal.taskList?.tasks).byId.get(retainedTaskId)?.status === "complete") {
+				liveRetention.clear(sessionKey);
+			}
 			const { messages: retained } = liveRetention.apply(sessionKey, base, parts);
 			return retained;
 		}
@@ -518,6 +525,11 @@ export function registerGoalEvents(core: GoalEventsCore): void {
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
+		// The run is over, so the block has done its job: drop it and let the next
+		// run's first request anchor a fresh one with the state as it is then.
+		// Keeping it would pin the model to a snapshot taken when this run began,
+		// and a block that no longer fits the history cannot be replayed anyway.
+		if (!isSupersededContext(ctx)) liveRetention.clear(sessionKeyFor(ctx));
 		const endedGoalId = core.runningGoalId;
 		core.runningGoalId = null;
 		continuationAfterSettleFor = null;

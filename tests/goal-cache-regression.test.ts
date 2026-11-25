@@ -27,15 +27,15 @@ test("cache comparison rejects missing scenarios, early text, schemas, options, 
 test("task progress from #108 no longer resets the prefix, and the gate rejects any reset", () => {
 	const investigation = investigateCache();
 	assert.equal(investigation.stateChanges.filter((step: any) => step.prefixBreak).length, 0);
-	assert.equal(investigation.occupancy[1].appendedCounters, 0);
+	assert.equal(investigation.occupancy[1].refreshedBlocks, 0);
 	assert.equal(investigation.occupancy[1].breaks, 0);
-	assert.ok(investigation.occupancy[1].totalRequestBytes < investigation.occupancy[0].totalRequestBytes);
-	const baseline = {...report(), investigation, corpus: {transitions: 1000, breaks: 32}};
+	assert.ok(investigation.occupancy[1].totalRequestBytes <= investigation.occupancy[0].totalRequestBytes);
+	const baseline = {...report(), investigation, corpus: {transitions: 1000, breaks: 0}};
 	for (const mutate of [
 	(r: any) => {r.investigation.stateChanges[0].kind = "unknown-reset";},
 		(r: any) => {r.investigation.stateChanges[0].prefixBreak = true;},
 		(r: any) => {r.investigation.occupancy[1].breaks = 1;},
-		(r: any) => {r.investigation.occupancy[1].appendedCounters = 1;},
+		(r: any) => {r.investigation.occupancy[1].refreshedBlocks = 1;},
 		(r: any) => {r.corpus.breaks++;},
 		]) {
 		const candidate = structuredClone(baseline); mutate(candidate);

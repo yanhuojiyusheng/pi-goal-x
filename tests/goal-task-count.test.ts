@@ -42,7 +42,7 @@ for (const pending of [false, true]) for (const approved of [false, true]) test(
 		assert.equal(!!taskCompletionBlockWarning(taskList), pending);
 		// The task gate travels with the task list in the snapshot block.
 		const parts = goalPromptParts(h.core.state.goal!);
-		const prompt = `${parts.state}\n${parts.counters}`;
+		const prompt = parts.state;
 		const auditPrompt = buildGoalAuditorPrompt({goal: h.core.state.goal!, detailedSummary: "verified fixture"});
 		assert.equal(/TASK GATE:/.test(prompt), pending);
 		assert.equal(/TASK GATE:/.test(auditPrompt), pending);

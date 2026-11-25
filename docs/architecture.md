@@ -150,7 +150,7 @@ All files are in `extensions/`.
 | `prompts/goal-prompts.ts` | Checkpoint, goal state, stale and unfocused prompts |
 | `prompts/goal-draft-prompts.ts` | Drafting prompt and confirmation text |
 | `goal-prompt-cache.ts` | Moves the explicit cache breakpoint before the request-only tail |
-| `goal-live-retention.ts` | Keeps earlier request-only tails so implicit-cache prefixes stay stable |
+| `goal-live-retention.ts` | Replays one request-only goal block at a verified history anchor so implicit-cache prefixes stay stable |
 
 ### Settings
 

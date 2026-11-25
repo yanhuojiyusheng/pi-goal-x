@@ -2,43 +2,42 @@ import { hash } from "node:crypto";
 import { asRecord } from "./goal-record.ts";
 
 /**
- * Prefix-stable retention for request-only goal-state tails.
+ * Prefix-stable retention for one request-only goal block.
  *
  * The context hook appends live goal state to every provider request without
  * persisting it. When the next request arrives, the completed assistant turn
- * occupies the position where the previous tail sat, so request N is no
- * longer a prefix of request N+1 and implicit prompt caches (OpenAI Responses
- * / Chat Completions, which carry no explicit marker) freeze at the first
- * injection point.
+ * occupies the position where the previous block sat, so request N would no
+ * longer be a prefix of request N+1 and implicit prompt caches (OpenAI
+ * Responses / Chat Completions, which carry no explicit marker) freeze at the
+ * first injection point.
  *
- * This module makes each request a true prefix of the next: previously sent
- * tails are re-inserted verbatim at their recorded anchor (the session length
- * when they were emitted), the whole preceding history is verified unchanged
- * by digest, and only genuinely new tail content is appended. Identical
- * content across repeated requests appends nothing, so tool loops and idle
- * re-requests cost zero growth.
+ * This module keeps one block at one position for the whole agent run: the block
+ * is re-inserted verbatim at its recorded anchor (the session length when it was
+ * emitted) and the preceding history is verified unchanged, so every later
+ * request of the run is a literal prefix extension of the earlier one. Tool
+ * loops, idle re-requests and multi-turn work inside one run therefore add
+ * nothing to the block and reuse the whole cached prefix.
  *
- * Three kinds of text go through here, by how often they change:
- * - state: the goal policy (rules, objective, contract, status). A change is
- *   appended as a new block that says it supersedes the earlier ones, so the
- *   cached prefix survives pause, resume and settings changes.
- * - counters: the task list snapshot. A change appends a new snapshot.
- * - ephemeral: usage, run counts and notes that are cleared by omission
- *   (scheduling waits, stall notes, one-shot reminders). It rides at the end of
- *   each request and is never retained, so nothing stale is left in history.
+ * One block, one position. The block carries the goal policy, the task list and
+ * the per-turn pointer together, so there is exactly one `[PI GOAL ...]` message
+ * in the request and nothing in history can contradict it. The trade is that the
+ * block's content is frozen for the run: the model sees the state as it was when
+ * the run started, refreshed at the next run boundary. A change of scope (a
+ * different goal, or a changed objective, contract or sisyphus mode), a one-shot
+ * steering message, a finished task, any history rewrite (compaction, resume,
+ * session-tree moves, filter changes, middle-message edits), an unsafe insertion
+ * point or a new run drops the retained copy and re-anchors at the tail.
  *
- * A change of scope (a different goal), any history rewrite (compaction,
- * resume, session-tree moves, filter changes, middle-message edits), an unsafe
- * insertion point, or overflow performs one documented full reset instead of
- * silently shifting the prefix or corrupting message structure.
+ * History verification is incremental: every message is copied once, when it is
+ * first seen, and later requests only compare the copy with the current message.
+ * Long strings are kept as a length and a hash so big tool results are not held
+ * twice.
  */
 
-const LIVE_CONTEXT_TYPE = "pi-goal-live-context";
+export const LIVE_CONTEXT_TYPE = "pi-goal-live-context";
 
-type LiveTailKind = "goal-state" | "goal-counters";
-
-/** A request-only tail message. Never persisted; the hook replays it per request. */
-interface LiveMessage {
+/** A request-only block message. Never persisted; the hook replays it per request. */
+export interface LiveMessage {
 	role: "custom";
 	customType: typeof LIVE_CONTEXT_TYPE;
 	content: string;
@@ -47,63 +46,47 @@ interface LiveMessage {
 }
 
 /**
- * Upper bound on retained tails per session. Retained tails are small (policy
- * blocks and task snapshots), so the steady-state wire overhead stays near a
- * few kilobytes; exceeding the bound performs a single full reset, i.e. at
- * most one prefix break per MAX_RETAINED_LIVE_TAILS changes.
+ * Upper bound on tracked sessions (parent plus isolated runs). Evicting the
+ * oldest identity only costs that session one re-anchor.
  */
-export const MAX_RETAINED_LIVE_TAILS = 48;
+export const MAX_TRACKED_SESSIONS = 16;
 
 /**
- * Upper bound on policy blocks kept in history. Each change appends a block
- * that supersedes the earlier ones; past this many, one reset removes them.
+ * Retired: earlier releases re-anchored a pinned block every N requests. One
+ * replaced block has nothing to re-anchor, so the setting is ignored; the export
+ * stays so archived gates that compare against a released tree still link.
  */
-export const MAX_RETAINED_POLICY_BLOCKS = 12;
+export const MAX_STATE_REANCHOR_REQUESTS = 0;
 
-/** Said once at the top of every policy block that follows an earlier one. */
-export const POLICY_SUPERSEDED_NOTE = "[This is the current goal policy. It supersedes every earlier [PI GOAL …] block above; follow only this one.]";
-
-/** Sent with every request while superseded policy blocks remain in history. */
-export const POLICY_RECENCY_NOTE = "Only the latest goal policy block above applies; earlier goal policy blocks are superseded.";
-
-/** Upper bound on concurrently tracked sessions (parent plus isolated runs). */
-const MAX_TRACKED_SESSIONS = 16;
-/**
- * Extra historical snapshots (the task list), excluding policy blocks. Past
- * this a full reset happens. Old snapshots are cheap cached tokens; a reset
- * re-sends the whole history since the first anchor uncached, so this is sized
- * to hold the task-list updates of a long goal.
- */
-export const MAX_RETAINED_COUNTER_BYTES = 24576;
-
-export interface FreshLiveTails {
-	/** Goal policy. Retained; a change is appended and supersedes earlier blocks. */
+export interface FreshLiveBlock {
+	/** The complete request-only block: policy text, task list and pointer. */
 	state: string;
-	/** Task list snapshot. Retained; a change appends a new snapshot. */
-	counters?: string | undefined;
-	/** Request-only text for this request, never retained: usage, runs, notes cleared by omission. */
-	ephemeral?: string | undefined;
-	/** What the goal is about (usually the goal id). A different scope starts over. */
-	scope?: string | undefined;
+	/** The focused task, so the hook can drop a block whose task just finished. */
+	taskId?: string | undefined;
+	/** What the block is about. A different scope starts the retained prefix over. */
+	scope: string;
+	/**
+	 * True when the block carries something the model must act on now (a one-shot
+	 * warning). The content is otherwise frozen for the run, so a steering note
+	 * would be invisible without this.
+	 */
+	reanchor?: boolean | undefined;
 }
 
-interface RetainedTail {
+interface RetainedBlock {
 	anchorIndex: number;
-	/** The message the tail follows, as it was when the tail was added. */
+	/** The message the block follows, as it was when the block was added. */
 	anchorSnapshot: Snapshot | null;
-	content: string;
-	kind: LiveTailKind;
+	state: string;
+	taskId: string | undefined;
+	scope: string;
 }
 
 interface SessionRetention {
-	tails: RetainedTail[];
-	lastFresh: { state: string; counters: string | undefined; countersState: string | undefined; scope: string | undefined } | undefined;
-	/** The request-only text sent last, so the explicit-cache marker can skip it. */
-	lastEphemeral: string | undefined;
+	retained: RetainedBlock | undefined;
 	/** Every base message as it was at the last apply; any earlier rewrite resets. */
 	baseSnapshots: Array<Snapshot | null>;
 }
-
 
 /**
  * A message as it looked at the last request, kept to compare against the next
@@ -176,7 +159,7 @@ function sameAsSnapshot(snapshot: Snapshot, value: unknown, depth = 0): boolean 
 const unchanged = (snapshot: Snapshot | null, message: unknown): boolean => snapshot !== null && sameAsSnapshot(snapshot, message);
 
 /**
- * Tool results must stay adjacent to the call they answer, so a retained tail
+ * Tool results must stay adjacent to the call they answer, so a retained block
  * may never be inserted directly before one. Covers the Pi session role
  * (`toolResult`), the provider wire role (`tool`, as seen by marker
  * relocation), and result-bearing content blocks in either vocabulary — the
@@ -213,14 +196,14 @@ function makeLiveMessage(content: string): LiveMessage {
 export class LiveTailRetention {
 	private readonly sessions = new Map<string, SessionRetention>();
 
-	apply<T>(sessionKey: string, base: readonly T[], fresh: FreshLiveTails | null): { messages: Array<T | LiveMessage>; transientContents: string[]; stableLength: number } {
+	apply<T>(sessionKey: string, base: readonly T[], fresh: FreshLiveBlock | null): { messages: Array<T | LiveMessage>; transientContents: string[]; stableLength: number } {
 		if (fresh === null) {
 			this.sessions.delete(sessionKey);
 			return { messages: [...base], transientContents: [], stableLength: base.length };
 		}
 		let session = this.sessions.get(sessionKey);
 		if (!session) {
-			session = { tails: [], lastFresh: undefined, lastEphemeral: undefined, baseSnapshots: [] };
+			session = { retained: undefined, baseSnapshots: [] };
 			if (this.sessions.size >= MAX_TRACKED_SESSIONS) {
 				const oldest = this.sessions.keys().next();
 				if (!oldest.done) this.sessions.delete(oldest.value);
@@ -228,21 +211,18 @@ export class LiveTailRetention {
 			this.sessions.set(sessionKey, session);
 		}
 		const reset = () => {
-			session!.tails = [];
-			session!.lastFresh = undefined;
+			session!.retained = undefined;
 			session!.baseSnapshots = [];
 		};
-		// A different goal (or a stale-checkpoint or unfocused state) shares
-		// nothing with the earlier blocks, so start over.
-		if (session.lastFresh !== undefined && session.lastFresh.scope !== fresh.scope) reset();
-		// A task list that disappears under the same policy it was sent with
-		// would leave the old list in history with nothing to supersede it. Under
-		// a different policy (paused, blocked) the new block takes over.
-		if (session.lastFresh?.counters !== undefined && fresh.counters === undefined && session.lastFresh.countersState === fresh.state) reset();
-		// Tails anchored while history was empty would linger at the head once
-		// real history arrives. Reset once so fresh tails anchor at the tail.
-		if (session.tails.length > 0 && session.baseSnapshots.length === 0 && base.length > 0) reset();
-		// Any rewrite earlier than the anchors — middle-message edits, filter
+		// A different goal, a different lifecycle state, or a changed objective,
+		// contract or style shares nothing with the earlier block, so start over:
+		// with one block there is no earlier copy to supersede, and keeping the old
+		// one would put a contradicting state in front of the model.
+		if (session.retained !== undefined && session.retained.scope !== fresh.scope) reset();
+		// A block anchored while history was empty would linger at the head once
+		// real history arrives. Reset once so the block anchors at the tail.
+		if (session.retained !== undefined && session.retained.anchorIndex === 0 && base.length > 0) reset();
+		// Any rewrite earlier than the anchor — middle-message edits, filter
 		// changes, checkpoint normalization — breaks the prefix even when the
 		// trailing message is identical, so verify the whole preceding history.
 		// Pi hands every request a fresh copy of the messages, and extensions may
@@ -260,72 +240,45 @@ export class LiveTailRetention {
 		// The verified history keeps its snapshots; only new messages are copied.
 		const snapshots = session.baseSnapshots;
 		for (let i = snapshots.length; i < base.length; i++) snapshots.push(snapshotMessage(base[i]));
-		// An unsafe anchor invalidates the whole replay. Keeping an earlier
-		// policy while re-appending fresh blocks would duplicate that policy.
-		let valid = 0;
-		while (valid < session.tails.length) {
-			const tail = session.tails[valid]!;
-			if (tail.anchorIndex > base.length) break;
-			if (tail.anchorIndex > 0) {
-				if (!unchanged(tail.anchorSnapshot, base[tail.anchorIndex - 1])) break;
-			}
-			if (splitsToolBatch(base[tail.anchorIndex])) break;
-			valid++;
+		// An unsafe anchor invalidates the replay: a block inserted before a tool
+		// result would break the call/answer pairing, and an anchor whose preceding
+		// message changed would sit somewhere the cache cannot follow.
+		const retained = session.retained;
+		if (retained !== undefined) {
+			if (retained.anchorIndex > base.length) reset();
+			else if (retained.anchorIndex > 0 && !unchanged(retained.anchorSnapshot, base[retained.anchorIndex - 1])) reset();
+			else if (splitsToolBatch(base[retained.anchorIndex])) reset();
 		}
-		if (valid < session.tails.length) reset();
-		// Append only what differs from the last emitted blocks, so unchanged
-		// content across repeats, tool loops, and history advances adds zero
-		// blocks while keeping the prefix literal. Overflow is measured against
-		// what this request actually appends: an unchanged request adds nothing
-		// and must never trigger a reset.
-		const counterBytes = () => session!.tails.filter(tail => tail.kind === "goal-counters").reduce((n, tail) => n + Buffer.byteLength(tail.content), 0);
-		const changes = () => {
-			const last = session!.lastFresh;
-			return {
-				policy: last === undefined || last.state !== fresh.state,
-				counters: fresh.counters !== undefined && (last === undefined || last.counters !== fresh.counters),
+		// One-shot steering packed into the block would stay invisible while the
+		// block is frozen, so it re-anchors instead.
+		if (fresh.reanchor === true) reset();
+		// Pin the block at the current tail. Inside the run every later request is
+		// a literal extension of this one; the next run re-anchors with fresh state.
+		if (session.retained === undefined) {
+			session.retained = {
+				anchorIndex: base.length,
+				anchorSnapshot: snapshots.at(-1) ?? null,
+				state: fresh.state,
+				taskId: fresh.taskId,
+				scope: fresh.scope,
 			};
-		};
-		let changed = changes();
-		const policyBlocks = session.tails.filter(tail => tail.kind === "goal-state").length;
-		if (session.tails.length + Number(changed.policy) + Number(changed.counters) > MAX_RETAINED_LIVE_TAILS
-			|| (changed.policy && policyBlocks >= MAX_RETAINED_POLICY_BLOCKS)
-			|| (changed.counters && counterBytes() + Buffer.byteLength(fresh.counters!) > MAX_RETAINED_COUNTER_BYTES)) {
-			reset();
-			changed = changes();
 		}
+		const kept = session.retained!;
 		const messages: Array<T | LiveMessage> = [...base];
-		for (let i = session.tails.length - 1; i >= 0; i--) {
-			const tail = session.tails[i]!;
-			messages.splice(tail.anchorIndex, 0, makeLiveMessage(tail.content));
-		}
-		const anchorSnapshot = snapshots.at(-1) ?? null;
-		const append = (content: string, kind: LiveTailKind) => {
-			messages.push(makeLiveMessage(content));
-			session!.tails.push({ anchorIndex: base.length, anchorSnapshot, content, kind });
-		};
-		if (changed.policy) append(session.tails.some(tail => tail.kind === "goal-state") ? `${POLICY_SUPERSEDED_NOTE}\n${fresh.state}` : fresh.state, "goal-state");
-		if (changed.counters) append(fresh.counters!, "goal-counters");
-		// Request-only text goes last and is never retained. While superseded
-		// policy blocks remain in history, say once per request which one counts.
-		const superseded = session.tails.filter(tail => tail.kind === "goal-state").length > 1;
-		const ephemeral = [superseded ? POLICY_RECENCY_NOTE : "", fresh.ephemeral ?? ""].filter(Boolean).join("\n");
-		const stableLength = messages.length;
-		if (ephemeral) messages.push(makeLiveMessage(ephemeral));
-		session.baseSnapshots = snapshots;
-		const previous = session.lastFresh;
-		session.lastFresh = fresh.counters === undefined
-			? { state: fresh.state, counters: previous?.counters, countersState: previous?.countersState, scope: fresh.scope }
-			: { state: fresh.state, counters: fresh.counters, countersState: fresh.state, scope: fresh.scope };
-		session.lastEphemeral = ephemeral || undefined;
-		return { messages, stableLength, transientContents: [...new Set([...session.tails.map(tail => tail.content), ...(ephemeral ? [ephemeral] : [])])] };
+		messages.splice(kept.anchorIndex, 0, makeLiveMessage(kept.state));
+		// Nothing follows the block, so the whole request is the prefix the next
+		// request can reuse.
+		return { messages, transientContents: [kept.state], stableLength: messages.length };
 	}
 
+	/** The block replayed for this session, for the explicit-cache marker to skip. */
 	contents(sessionKey: string): string[] | undefined {
 		const session = this.sessions.get(sessionKey);
-		if (!session) return undefined;
-		const tails = session.tails.map(tail => tail.content);
-		return session.lastEphemeral === undefined ? tails : [...tails, session.lastEphemeral];
+		return session?.retained === undefined ? undefined : [session.retained.state];
+	}
+
+	taskId(sessionKey: string): string | undefined {
+		return this.sessions.get(sessionKey)?.retained?.taskId;
 	}
 
 	clear(sessionKey?: string): void {
