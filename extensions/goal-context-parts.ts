@@ -44,8 +44,7 @@ import {
  * able to contradict it. The cost is that any change to the block breaks the
  * prefix from its anchor, which the retention layer measures rather than hides.
  */
-export interface GoalContextParts {
-	/** The complete request-only block. */
+interface GoalContextParts {
 	state: string;
 	/** The focused task, when one is pending, so a finished task drops the block. */
 	taskId?: string | undefined;

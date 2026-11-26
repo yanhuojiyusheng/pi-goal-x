@@ -117,6 +117,8 @@ export function taskListBlock(goal: GoalRecord, settings?: GoalSettings): string
 		const contract = legacyCurrent.verificationContract ? ` (contract: ${excerpt(legacyCurrent.verificationContract, 600, "tasks")})` : "";
 		lines.push(`  Current: ${excerpt(legacyCurrent.id, 80, "tasks")} · ${excerpt(legacyCurrent.title, 180, "tasks")}${contract}`);
 	}
+	// Finishing a phase's last subtask clears the current task, so nothing would
+	// point at the phase that is still open. Name it, but only when no task is current.
 	const legacy = promptProfile() === "legacy-v1";
 	if (legacy) {
 		// legacy-v1: pre-PR-E wording (current task also appears as a generic

@@ -4,6 +4,18 @@ All notable changes to pi-goal-x are documented here.
 
 ## [Unreleased]
 
+## [0.35.2] — 2026-11-26
+
+Includes #179 to #181.
+
+### Fixed
+
+- `/goal-refresh` now picks up a goal file that was edited in place. It used to report "no changes" and keep serving the old copy, most visibly with a shared goals folder (#178, thanks to @selimerunkut). It also lists goals whose revision changed.
+- A phase whose subtasks have all ended is now named in the task list, so the agent closes it instead of moving on to the next phase (#176, thanks to @yanhuojiyusheng for the report and PR #177).
+- Turning the auditor off in the global settings file (or by environment) now skips the audit. Completion only looked at the project file, so the audit still ran. The "audit started" message and ledger entry also show the auditor model you actually configured.
+- `/goal-refresh` now notices a change to the global settings file instead of saying "no changes".
+- A skipped Sisyphus step now counts as done, so the "step N of M" display moves on to the next step.
+
 ### Changed
 
 - The goal state is one block again. Policy, task list and the current pointer are composed into a single request-only message, replayed verbatim at a verified history anchor for the whole run, so every request inside a run is a literal prefix extension of the one before it and nothing in history can contradict the current state. The block refreshes at the run boundary and whenever the goal's scope changes. Prompt caches see no new resets: the 1,000-transition bound still measures zero breaks, and the 24 captured fixtures are a few hundred bytes smaller on average.

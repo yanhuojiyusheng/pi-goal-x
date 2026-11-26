@@ -604,3 +604,4 @@ test("a focused phase uses its open child's id in the ACTIVE header", () => {
 	assert.match(goalPromptParts(lightweight).state, /taskId=docs\]/);
 	assert.match(goalPromptParts(lightweight).state, /Current: docs · Write the docs/);
 });
+
