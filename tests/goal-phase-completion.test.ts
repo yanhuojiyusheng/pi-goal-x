@@ -169,3 +169,29 @@ test("without persisted focus UI starts with pending children and returns to the
 	phase.subtasks![1]!.status = "complete";
 	assert.match(matchingState(goal), /Current: p1 · Phase one\nDone when: Phase one acceptance/);
 });
+
+test("a phase awaiting wrap-up is announced as work to close, not work to start", () => {
+	const goal = phaseGoal();
+	// The symptom: the last child ends and the focus is cleared, so the block
+	// names the phase — but it used to tell the model to start it again.
+	goal.taskList!.tasks[0]!.subtasks![0]!.status = "skipped";
+	goal.taskList!.tasks[2]!.subtasks![1]!.status = "complete";
+	goal.currentTaskId = undefined;
+	const pointer = goalPromptParts(goal).pointer;
+	assert.match(pointer, /Close the phase whose subtasks have all ended: p1 · Phase one/);
+	assert.match(pointer, /update_goal_task\(\{task_id:"p1", status:"complete"\}\) once its own acceptance is met/);
+	assert.doesNotMatch(pointer, /Start with the first pending task: p1/, "a phase awaiting wrap-up is never suggested as work to start");
+
+	// An open phase keeps the ordinary start suggestion for its first open child.
+	goal.taskList!.tasks[0]!.subtasks![0]!.status = "pending";
+	assert.match(goalPromptParts(goal).pointer, /Start with the first pending task: 1\.1 · Step one one\nMark it current with update_goal_task\(\{task_id:"1\.1", status:"start"\}\)\./);
+
+	// A plain task list is unaffected.
+	const flat = createGoal({objective: "Flat work", autoContinue: true, sisyphus: false});
+	flat.taskList = {blockCompletion: false, proposedAt: "2026-11-14T00:00:00.000Z", tasks: [
+		{id: "a", title: "First", status: "pending"},
+		{id: "b", title: "Second", status: "pending"},
+	]} as GoalTaskList;
+	assert.match(goalPromptParts(flat).pointer, /Start with the first pending task: a · First/);
+	assert.doesNotMatch(goalPromptParts(flat).pointer, /Close the phase/);
+});

@@ -216,6 +216,11 @@ the three shapes is approved; a missing, reordered or extra body line is not:
 - pending task, none current: `Now: no task is marked current.`,
   `Start with the first pending task: …`,
   `Mark it current with update_goal_task({task_id:"…", status:"start"}).`, `Progress: n/m`;
+  when that task is a phase whose children all ended, the action line instead reads
+  `Close the phase whose subtasks have all ended: …`,
+  `Run update_goal_task({task_id:"…", status:"complete"}) once its own acceptance is met.`
+  — the derived cursor already picks the phase to close, so announcing it as work to
+  start named the wrong tool call;
 - no task list: `Now: keep advancing the objective above.`,
   `When it is actually met, call update_goal({status:"complete"}) …`.
 

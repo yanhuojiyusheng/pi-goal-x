@@ -361,6 +361,17 @@ export function goalPromptParts(goal: GoalRecord, settings?: GoalSettings, conte
 	return { state: `${header}\n\nUsage is cumulative across goal turns, not context occupancy. This state supersedes earlier snapshots.\n\n${policyText(goal, settings)}`, pointer: nextStepBlock(goal, settings, contextUsage) };
 }
 
+/**
+ * What makes the derived current task advance: closing a phase whose children
+ * all ended, or picking up an open step. Derived from the same task the cursor
+ * chose, so the suggestion can never contradict the choice — a wrapped-up phase
+ * used to be announced as "start" work the model was then told to pick up.
+ */
+function cursorAction(task: GoalTask): "close" | "start" {
+	if (task.status !== "pending" || task.lightweightSubtasks === true || !task.subtasks?.length) return "start";
+	return task.subtasks.every(child => child.status === "complete" || child.status === "skipped") ? "close" : "start";
+}
+
 /** The open step a focused task stands for: its first open child, recursively. */
 function actionableTask(task: GoalTask): GoalTask {
 	if (task.lightweightSubtasks) return task;
@@ -388,8 +399,13 @@ function nextStepBlock(goal: GoalRecord, settings?: GoalSettings, contextUsage?:
 		if (next) {
 			// Ids are never excerpted: a truncated id cannot be passed back to
 			// update_goal_task, and the pointer's example must be copy-pasteable.
-			lines.push(`Start with the first pending task: ${next.id} · ${excerpt(next.title, 180, "tasks")}`);
-			lines.push(`Mark it current with update_goal_task({task_id:"${next.id}", status:"start"}).`);
+			if (cursorAction(next) === "close") {
+				lines.push(`Close the phase whose subtasks have all ended: ${next.id} · ${excerpt(next.title, 180, "tasks")}`);
+				lines.push(`Run update_goal_task({task_id:"${next.id}", status:"complete"}) once its own acceptance is met.`);
+			} else {
+				lines.push(`Start with the first pending task: ${next.id} · ${excerpt(next.title, 180, "tasks")}`);
+				lines.push(`Mark it current with update_goal_task({task_id:"${next.id}", status:"start"}).`);
+			}
 		}
 	} else if (!index) {
 		lines.push("Now: keep advancing the objective above.");
